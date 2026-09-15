@@ -1,0 +1,17 @@
+packager:
+    projects:
+        src\Modules\Clientes\VeracodeDemo.Clientes.Api:
+            project_root: src\Modules\Clientes\VeracodeDemo.Clientes.Api
+            packager_manager_type: dotnet
+            root_build_file: src\Modules\Clientes\VeracodeDemo.Clientes.Api\VeracodeDemo.Clientes.Api.csproj
+            packager_manager_version: net8.0
+        src\Modules\Pagos\VeracodeDemo.Pagos.Api:
+            project_root: src\Modules\Pagos\VeracodeDemo.Pagos.Api
+            packager_manager_type: dotnet
+            root_build_file: src\Modules\Pagos\VeracodeDemo.Pagos.Api\VeracodeDemo.Pagos.Api.csproj
+            packager_manager_version: net8.0
+        src\Modules\Reservas\VeracodeDemo.Reservas.Api:
+            project_root: src\Modules\Reservas\VeracodeDemo.Reservas.Api
+            packager_manager_type: dotnet
+            root_build_file: src\Modules\Reservas\VeracodeDemo.Reservas.Api\VeracodeDemo.Reservas.Api.csproj
+            packager_manager_version: net8.0

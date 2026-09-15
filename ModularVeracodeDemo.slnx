@@ -1,0 +1,16 @@
+<Solution>
+  <Folder Name="/src/" />
+  <Folder Name="/src/Modules/" />
+  <Folder Name="/src/Modules/Clientes/">
+    <Project Path="src/Modules/Clientes/VeracodeDemo.Clientes.Api/VeracodeDemo.Clientes.Api.csproj" />
+  </Folder>
+  <Folder Name="/src/Modules/Pagos/">
+    <Project Path="src/Modules/Pagos/VeracodeDemo.Pagos.Api/VeracodeDemo.Pagos.Api.csproj" />
+  </Folder>
+  <Folder Name="/src/Modules/Reservas/">
+    <Project Path="src/Modules/Reservas/VeracodeDemo.Reservas.Api/VeracodeDemo.Reservas.Api.csproj" />
+  </Folder>
+  <Folder Name="/src/Shared/">
+    <Project Path="src/Shared/VeracodeDemo.Shared/VeracodeDemo.Shared.csproj" />
+  </Folder>
+</Solution>

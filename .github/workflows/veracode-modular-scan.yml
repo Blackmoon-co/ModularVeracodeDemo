@@ -1,0 +1,84 @@
+name: Veracode modular scan
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build solution
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore ModularVeracodeDemo.sln
+
+      - name: Build
+        run: dotnet build ModularVeracodeDemo.sln --configuration Release --no-restore
+
+  modular-scan:
+    name: Scan ${{ matrix.module.name }}
+    needs: build
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - name: clientes
+            project: src/Modules/Clientes/VeracodeDemo.Clientes.Api/VeracodeDemo.Clientes.Api.csproj
+            artifact: artifacts/veracode/clientes.zip
+          - name: reservas
+            project: src/Modules/Reservas/VeracodeDemo.Reservas.Api/VeracodeDemo.Reservas.Api.csproj
+            artifact: artifacts/veracode/reservas.zip
+          - name: pagos
+            project: src/Modules/Pagos/VeracodeDemo.Pagos.Api/VeracodeDemo.Pagos.Api.csproj
+            artifact: artifacts/veracode/pagos.zip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build module package
+        shell: pwsh
+        run: ./scripts/package-module.ps1 -Module "${{ matrix.module.name }}"
+
+      - name: Install Veracode CLI
+        shell: bash
+        run: curl -fsS https://tools.veracode.com/veracode-cli/install | sh
+
+      - name: Run Veracode package discovery
+        shell: bash
+        run: |
+          ./veracode package discover src --dry-run --format yaml
+
+      - name: Pipeline Scan placeholder
+        shell: bash
+        env:
+          VERACODE_API_ID: ${{ secrets.VERACODE_API_ID }}
+          VERACODE_API_KEY: ${{ secrets.VERACODE_API_KEY }}
+          MODULE_NAME: ${{ matrix.module.name }}
+          MODULE_ARTIFACT: ${{ matrix.module.artifact }}
+        run: |
+          test -f "$MODULE_ARTIFACT"
+          echo "Artifact ready for $MODULE_NAME: $MODULE_ARTIFACT"
+          echo "Replace this block with the customer's approved Veracode Pipeline Scan action or JAR invocation."
+          echo "Keep one scan per matrix module so GitHub Actions executes the modules in parallel."

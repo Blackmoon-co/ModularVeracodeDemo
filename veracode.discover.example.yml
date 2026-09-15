@@ -1,0 +1,17 @@
+# Archivo de referencia para la PoC.
+# No lo trates como salida oficial de Veracode: `veracode package discover .`
+# debe generar o actualizar `veracode.yml` en el entorno real.
+#
+# La documentacion oficial indica que `package discover` detecta proyectos
+# MSBuild/.NET, identifica modulos soportados y genera/actualiza veracode.yml.
+
+modules:
+  - name: clientes
+    project: src/Modules/Clientes/VeracodeDemo.Clientes.Api/VeracodeDemo.Clientes.Api.csproj
+    artifact: artifacts/veracode/clientes.zip
+  - name: reservas
+    project: src/Modules/Reservas/VeracodeDemo.Reservas.Api/VeracodeDemo.Reservas.Api.csproj
+    artifact: artifacts/veracode/reservas.zip
+  - name: pagos
+    project: src/Modules/Pagos/VeracodeDemo.Pagos.Api/VeracodeDemo.Pagos.Api.csproj
+    artifact: artifacts/veracode/pagos.zip
