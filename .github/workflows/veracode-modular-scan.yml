@@ -1,17 +1,94 @@
 name: Veracode modular scan
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - main
+
   pull_request:
     branches:
       - main
 
+  workflow_dispatch:
+
 permissions:
   contents: read
+  security-events: write
+  actions: read
+  issues: write
+
+env:
+  DOTNET_VERSION: "8.0.x"
+  CONFIGURATION: "Release"
 
 jobs:
+
+  # ============================================================
+  # 1. Detectar módulos afectados
+  # ============================================================
+
+  detect-changes:
+    name: Detectar módulos afectados
+    runs-on: ubuntu-latest
+
+    outputs:
+      clientes: ${{ steps.filter.outputs.clientes }}
+      reservas: ${{ steps.filter.outputs.reservas }}
+      pagos: ${{ steps.filter.outputs.pagos }}
+      all_modules: ${{ steps.filter.outputs.all_modules }}
+      force_all: ${{ steps.manual.outputs.force_all }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detectar si es ejecución manual
+        id: manual
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "force_all=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "force_all=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Detectar cambios por rutas
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            clientes:
+              - 'src/Modules/Clientes/**'
+
+            reservas:
+              - 'src/Modules/Reservas/**'
+
+            pagos:
+              - 'src/Modules/Pagos/**'
+
+            all_modules:
+              - 'src/Shared/**'
+              - 'scripts/**'
+              - 'veracode.yml'
+              - 'veracode.discover.example.yml'
+              - '.github/workflows/**'
+              - '*.sln'
+              - '**/Directory.Build.props'
+              - '**/Directory.Build.targets'
+              - '**/Directory.Packages.props'
+
+  # ============================================================
+  # 2. Validar compilación de la solución completa
+  #
+  # Este build valida que la solución compile.
+  # No significa que todos los módulos deban escanearse.
+  # ============================================================
+
   build:
     name: Build solution
+    needs: detect-changes
     runs-on: ubuntu-latest
 
     steps:
@@ -21,32 +98,33 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 8.0.x
+          dotnet-version: ${{ env.DOTNET_VERSION }}
 
       - name: Restore
         run: dotnet restore ModularVeracodeDemo.sln
 
       - name: Build
-        run: dotnet build ModularVeracodeDemo.sln --configuration Release --no-restore
+        run: |
+          dotnet build ModularVeracodeDemo.sln \
+            --configuration "${{ env.CONFIGURATION }}" \
+            --no-restore
 
-  modular-scan:
-    name: Scan ${{ matrix.module.name }}
-    needs: build
+  # ============================================================
+  # 3. AutoPackage - Clientes
+  # ============================================================
+
+  package-clientes:
+    name: AutoPackage - Clientes
+    needs:
+      - detect-changes
+      - build
+
+    if: |
+      needs.detect-changes.outputs.clientes == 'true' ||
+      needs.detect-changes.outputs.all_modules == 'true' ||
+      needs.detect-changes.outputs.force_all == 'true'
+
     runs-on: ubuntu-latest
-
-    strategy:
-      fail-fast: false
-      matrix:
-        module:
-          - name: clientes
-            project: src/Modules/Clientes/VeracodeDemo.Clientes.Api/VeracodeDemo.Clientes.Api.csproj
-            artifact: artifacts/veracode/clientes.zip
-          - name: reservas
-            project: src/Modules/Reservas/VeracodeDemo.Reservas.Api/VeracodeDemo.Reservas.Api.csproj
-            artifact: artifacts/veracode/reservas.zip
-          - name: pagos
-            project: src/Modules/Pagos/VeracodeDemo.Pagos.Api/VeracodeDemo.Pagos.Api.csproj
-            artifact: artifacts/veracode/pagos.zip
 
     steps:
       - name: Checkout
@@ -55,30 +133,386 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 8.0.x
+          dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: Build module package
-        shell: pwsh
-        run: ./scripts/package-module.ps1 -Module "${{ matrix.module.name }}"
+      - name: Restore
+        run: dotnet restore ModularVeracodeDemo.sln
 
-      - name: Install Veracode CLI
-        shell: bash
-        run: curl -fsS https://tools.veracode.com/veracode-cli/install | sh
-
-      - name: Run Veracode package discovery
+      - name: Instalar Veracode CLI
         shell: bash
         run: |
-          ./veracode package discover src --dry-run --format yaml
+          set -euo pipefail
 
-      - name: Pipeline Scan placeholder
+          curl -fsS https://tools.veracode.com/veracode-cli/install | sh
+
+          if [ -f "./veracode" ]; then
+            chmod +x ./veracode
+          fi
+
+      - name: Verificar Veracode CLI
         shell: bash
-        env:
-          VERACODE_API_ID: ${{ secrets.VERACODE_API_ID }}
-          VERACODE_API_KEY: ${{ secrets.VERACODE_API_KEY }}
-          MODULE_NAME: ${{ matrix.module.name }}
-          MODULE_ARTIFACT: ${{ matrix.module.artifact }}
         run: |
-          test -f "$MODULE_ARTIFACT"
-          echo "Artifact ready for $MODULE_NAME: $MODULE_ARTIFACT"
-          echo "Replace this block with the customer's approved Veracode Pipeline Scan action or JAR invocation."
-          echo "Keep one scan per matrix module so GitHub Actions executes the modules in parallel."
+          set -euo pipefail
+
+          if [ -x "./veracode" ]; then
+            ./veracode --version || ./veracode --help
+          elif command -v veracode >/dev/null 2>&1; then
+            veracode --version || veracode --help
+          else
+            echo "No se encontró el ejecutable de Veracode CLI."
+            exit 1
+          fi
+
+      - name: Ejecutar AutoPackaging para Clientes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SOURCE_PATH="src/Modules/Clientes/VeracodeDemo.Clientes.Api"
+          OUTPUT_DIR="artifacts/autopackage/clientes"
+          FINAL_DIR="artifacts/veracode"
+
+          rm -rf "$OUTPUT_DIR"
+          mkdir -p "$OUTPUT_DIR"
+          mkdir -p "$FINAL_DIR"
+
+          if [ -x "./veracode" ]; then
+            ./veracode package \
+              --source "$SOURCE_PATH" \
+              --type directory \
+              --trust \
+              --verbose \
+              --output "$OUTPUT_DIR"
+          else
+            veracode package \
+              --source "$SOURCE_PATH" \
+              --type directory \
+              --trust \
+              --verbose \
+              --output "$OUTPUT_DIR"
+          fi
+
+          PACKAGE_FILE="$(find "$OUTPUT_DIR" -type f -iname '*.zip' | head -n 1)"
+
+          if [ -z "$PACKAGE_FILE" ]; then
+            echo "AutoPackaging no generó un archivo ZIP para Clientes."
+            echo "Contenido generado:"
+            find "$OUTPUT_DIR" -maxdepth 4 -type f -print || true
+            exit 1
+          fi
+
+          cp "$PACKAGE_FILE" "$FINAL_DIR/clientes.zip"
+
+          echo "Paquete generado para Clientes:"
+          ls -lh "$FINAL_DIR/clientes.zip"
+
+      - name: Verificar paquete Clientes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f "artifacts/veracode/clientes.zip"
+          test -s "artifacts/veracode/clientes.zip"
+
+          echo "Paquete Clientes listo:"
+          ls -lh artifacts/veracode/clientes.zip
+
+      - name: Subir artefacto Clientes
+        uses: actions/upload-artifact@v4
+        with:
+          name: veracode-artifact-clientes
+          path: artifacts/veracode/clientes.zip
+          if-no-files-found: error
+
+  # ============================================================
+  # 4. AutoPackage - Reservas
+  # ============================================================
+
+  package-reservas:
+    name: AutoPackage - Reservas
+    needs:
+      - detect-changes
+      - build
+
+    if: |
+      needs.detect-changes.outputs.reservas == 'true' ||
+      needs.detect-changes.outputs.all_modules == 'true' ||
+      needs.detect-changes.outputs.force_all == 'true'
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore
+        run: dotnet restore ModularVeracodeDemo.sln
+
+      - name: Instalar Veracode CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl -fsS https://tools.veracode.com/veracode-cli/install | sh
+
+          if [ -f "./veracode" ]; then
+            chmod +x ./veracode
+          fi
+
+      - name: Verificar Veracode CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -x "./veracode" ]; then
+            ./veracode --version || ./veracode --help
+          elif command -v veracode >/dev/null 2>&1; then
+            veracode --version || veracode --help
+          else
+            echo "No se encontró el ejecutable de Veracode CLI."
+            exit 1
+          fi
+
+      - name: Ejecutar AutoPackaging para Reservas
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SOURCE_PATH="src/Modules/Reservas/VeracodeDemo.Reservas.Api"
+          OUTPUT_DIR="artifacts/autopackage/reservas"
+          FINAL_DIR="artifacts/veracode"
+
+          rm -rf "$OUTPUT_DIR"
+          mkdir -p "$OUTPUT_DIR"
+          mkdir -p "$FINAL_DIR"
+
+          if [ -x "./veracode" ]; then
+            ./veracode package \
+              --source "$SOURCE_PATH" \
+              --type directory \
+              --trust \
+              --verbose \
+              --output "$OUTPUT_DIR"
+          else
+            veracode package \
+              --source "$SOURCE_PATH" \
+              --type directory \
+              --trust \
+              --verbose \
+              --output "$OUTPUT_DIR"
+          fi
+
+          PACKAGE_FILE="$(find "$OUTPUT_DIR" -type f -iname '*.zip' | head -n 1)"
+
+          if [ -z "$PACKAGE_FILE" ]; then
+            echo "AutoPackaging no generó un archivo ZIP para Reservas."
+            echo "Contenido generado:"
+            find "$OUTPUT_DIR" -maxdepth 4 -type f -print || true
+            exit 1
+          fi
+
+          cp "$PACKAGE_FILE" "$FINAL_DIR/reservas.zip"
+
+          echo "Paquete generado para Reservas:"
+          ls -lh "$FINAL_DIR/reservas.zip"
+
+      - name: Verificar paquete Reservas
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f "artifacts/veracode/reservas.zip"
+          test -s "artifacts/veracode/reservas.zip"
+
+          echo "Paquete Reservas listo:"
+          ls -lh artifacts/veracode/reservas.zip
+
+      - name: Subir artefacto Reservas
+        uses: actions/upload-artifact@v4
+        with:
+          name: veracode-artifact-reservas
+          path: artifacts/veracode/reservas.zip
+          if-no-files-found: error
+
+  # ============================================================
+  # 5. AutoPackage - Pagos
+  # ============================================================
+
+  package-pagos:
+    name: AutoPackage - Pagos
+    needs:
+      - detect-changes
+      - build
+
+    if: |
+      needs.detect-changes.outputs.pagos == 'true' ||
+      needs.detect-changes.outputs.all_modules == 'true' ||
+      needs.detect-changes.outputs.force_all == 'true'
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore
+        run: dotnet restore ModularVeracodeDemo.sln
+
+      - name: Instalar Veracode CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl -fsS https://tools.veracode.com/veracode-cli/install | sh
+
+          if [ -f "./veracode" ]; then
+            chmod +x ./veracode
+          fi
+
+      - name: Verificar Veracode CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -x "./veracode" ]; then
+            ./veracode --version || ./veracode --help
+          elif command -v veracode >/dev/null 2>&1; then
+            veracode --version || veracode --help
+          else
+            echo "No se encontró el ejecutable de Veracode CLI."
+            exit 1
+          fi
+
+      - name: Ejecutar AutoPackaging para Pagos
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SOURCE_PATH="src/Modules/Pagos/VeracodeDemo.Pagos.Api"
+          OUTPUT_DIR="artifacts/autopackage/pagos"
+          FINAL_DIR="artifacts/veracode"
+
+          rm -rf "$OUTPUT_DIR"
+          mkdir -p "$OUTPUT_DIR"
+          mkdir -p "$FINAL_DIR"
+
+          if [ -x "./veracode" ]; then
+            ./veracode package \
+              --source "$SOURCE_PATH" \
+              --type directory \
+              --trust \
+              --verbose \
+              --output "$OUTPUT_DIR"
+          else
+            veracode package \
+              --source "$SOURCE_PATH" \
+              --type directory \
+              --trust \
+              --verbose \
+              --output "$OUTPUT_DIR"
+          fi
+
+          PACKAGE_FILE="$(find "$OUTPUT_DIR" -type f -iname '*.zip' | head -n 1)"
+
+          if [ -z "$PACKAGE_FILE" ]; then
+            echo "AutoPackaging no generó un archivo ZIP para Pagos."
+            echo "Contenido generado:"
+            find "$OUTPUT_DIR" -maxdepth 4 -type f -print || true
+            exit 1
+          fi
+
+          cp "$PACKAGE_FILE" "$FINAL_DIR/pagos.zip"
+
+          echo "Paquete generado para Pagos:"
+          ls -lh "$FINAL_DIR/pagos.zip"
+
+      - name: Verificar paquete Pagos
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f "artifacts/veracode/pagos.zip"
+          test -s "artifacts/veracode/pagos.zip"
+
+          echo "Paquete Pagos listo:"
+          ls -lh artifacts/veracode/pagos.zip
+
+      - name: Subir artefacto Pagos
+        uses: actions/upload-artifact@v4
+        with:
+          name: veracode-artifact-pagos
+          path: artifacts/veracode/pagos.zip
+          if-no-files-found: error
+
+  # ============================================================
+  # 6. Pipeline Scan - Clientes
+  # ============================================================
+
+  scan-clientes:
+    name: Pipeline Scan - Clientes
+    needs: package-clientes
+    if: needs.package-clientes.result == 'success'
+
+    uses: ./.github/workflows/veracode-pipeline-scan.yml
+
+    with:
+      artifact_name: veracode-artifact-clientes
+      veracode_policy_name: 'Politica Restritiva'
+      json_output: true
+      output_file: clientes-veracode-results.json
+      fail_build: false
+      verbose: true
+
+    secrets: inherit
+
+  # ============================================================
+  # 7. Pipeline Scan - Reservas
+  # ============================================================
+
+  scan-reservas:
+    name: Pipeline Scan - Reservas
+    needs: package-reservas
+    if: needs.package-reservas.result == 'success'
+
+    uses: ./.github/workflows/veracode-pipeline-scan.yml
+
+    with:
+      artifact_name: veracode-artifact-reservas
+      veracode_policy_name: 'Politica Restritiva'
+      json_output: true
+      output_file: reservas-veracode-results.json
+      fail_build: false
+      verbose: true
+
+    secrets: inherit
+
+  # ============================================================
+  # 8. Pipeline Scan - Pagos
+  # ============================================================
+
+  scan-pagos:
+    name: Pipeline Scan - Pagos
+    needs: package-pagos
+    if: needs.package-pagos.result == 'success'
+
+    uses: ./.github/workflows/veracode-pipeline-scan.yml
+
+    with:
+      artifact_name: veracode-artifact-pagos
+      veracode_policy_name: 'Politica Restritiva'
+      json_output: true
+      output_file: pagos-veracode-results.json
+      fail_build: false
+      verbose: true
+
+    secrets: inherit
