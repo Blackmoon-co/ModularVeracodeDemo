@@ -1,4 +1,4 @@
-name: Veracode modular scan
+name: Veracode Modular Scan
 
 on:
   push:
@@ -10,25 +10,32 @@ on:
       - main
 
   workflow_dispatch:
+    inputs:
+      force_all:
+        description: "Escanear todos los módulos"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
   security-events: write
   actions: read
   issues: write
+  pull-requests: write
 
 env:
   DOTNET_VERSION: "8.0.x"
-  CONFIGURATION: "Release"
+  BUILD_CONFIGURATION: Release
+  VERACODE_POLICY: "Politica Restrictiva"
 
 jobs:
 
   # ============================================================
-  # 1. Detectar módulos afectados
+  # Detectar módulos modificados
   # ============================================================
-
   detect-changes:
-    name: Detectar módulos afectados
+    name: Detectar cambios
     runs-on: ubuntu-latest
 
     outputs:
@@ -36,235 +43,179 @@ jobs:
       reservas: ${{ steps.changes.outputs.reservas }}
       pagos: ${{ steps.changes.outputs.pagos }}
       all_modules: ${{ steps.changes.outputs.all_modules }}
-      force_all: ${{ steps.manual.outputs.force_all }}
 
     steps:
-      - name: Checkout
+      - name: Checkout completo
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Detectar si es ejecución manual
-        id: manual
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "force_all=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "force_all=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Detectar cambios por Git
+      - name: Detectar módulos modificados
         id: changes
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          CURRENT_SHA: ${{ github.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          FORCE_ALL: ${{ inputs.force_all }}
         run: |
           set -euo pipefail
+
+          echo "Evento: ${EVENT_NAME}"
+          echo "Force all: ${FORCE_ALL}"
+
+          if [[ "${FORCE_ALL}" == "true" ]]; then
+            echo "clientes=true" >> "$GITHUB_OUTPUT"
+            echo "reservas=true" >> "$GITHUB_OUTPUT"
+            echo "pagos=true" >> "$GITHUB_OUTPUT"
+            echo "all_modules=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            BASE_SHA="${PR_BASE_SHA}"
+            HEAD_SHA="${PR_HEAD_SHA}"
+          else
+            BASE_SHA="${BEFORE_SHA}"
+            HEAD_SHA="${CURRENT_SHA}"
+          fi
+
+          # En algunos push iniciales GitHub utiliza un SHA vacío.
+          if [[ -z "${BASE_SHA}" || "${BASE_SHA}" == "0000000000000000000000000000000000000000" ]]; then
+            echo "No existe SHA anterior. Se escanearán todos los módulos."
+            CHANGED_FILES="$(git ls-files)"
+          else
+            echo "Comparando ${BASE_SHA} contra ${HEAD_SHA}"
+            CHANGED_FILES="$(git diff --name-only "${BASE_SHA}" "${HEAD_SHA}")"
+          fi
+
+          echo "Archivos modificados:"
+          echo "${CHANGED_FILES}"
 
           CLIENTES=false
           RESERVAS=false
           PAGOS=false
           ALL_MODULES=false
 
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          # Cambios globales que afectan todos los módulos.
+          if echo "${CHANGED_FILES}" | grep -Eq \
+            '^(src/Shared/|.*\.sln$|.*\.props$|.*\.targets$|global\.json$|NuGet\.config$|Directory\.Build\.(props|targets)$|\.github/|scripts/)'; then
+            ALL_MODULES=true
+          fi
+
+          # Cambios específicos por módulo.
+          if echo "${CHANGED_FILES}" | grep -q '^src/Modules/Clientes/'; then
+            CLIENTES=true
+          fi
+
+          if echo "${CHANGED_FILES}" | grep -q '^src/Modules/Reservas/'; then
+            RESERVAS=true
+          fi
+
+          if echo "${CHANGED_FILES}" | grep -q '^src/Modules/Pagos/'; then
+            PAGOS=true
+          fi
+
+          if [[ "${ALL_MODULES}" == "true" ]]; then
             CLIENTES=true
             RESERVAS=true
             PAGOS=true
-            ALL_MODULES=true
-          else
-            if [ "${{ github.event_name }}" = "pull_request" ]; then
-              BASE_SHA="${{ github.event.pull_request.base.sha }}"
-              HEAD_SHA="${{ github.event.pull_request.head.sha }}"
-            else
-              BASE_SHA="${{ github.event.before }}"
-              HEAD_SHA="${{ github.sha }}"
-            fi
-
-            # En algunos casos GitHub entrega un SHA compuesto
-            # solamente por ceros, por ejemplo en el primer push.
-            if [ -z "$BASE_SHA" ] || [[ "$BASE_SHA" =~ ^0+$ ]]; then
-              BASE_SHA="$(git rev-list --max-parents=0 HEAD)"
-            fi
-
-            echo "Evento: ${{ github.event_name }}"
-            echo "BASE_SHA: $BASE_SHA"
-            echo "HEAD_SHA: $HEAD_SHA"
-
-            CHANGED_FILES="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" || true)"
-
-            echo "========================================="
-            echo "Archivos modificados:"
-            echo "$CHANGED_FILES"
-            echo "========================================="
-
-            # Cambios dentro del módulo Clientes
-            if echo "$CHANGED_FILES" | grep -qE '^src/Modules/Clientes/'; then
-              CLIENTES=true
-            fi
-
-            # Cambios dentro del módulo Reservas
-            if echo "$CHANGED_FILES" | grep -qE '^src/Modules/Reservas/'; then
-              RESERVAS=true
-            fi
-
-            # Cambios dentro del módulo Pagos
-            if echo "$CHANGED_FILES" | grep -qE '^src/Modules/Pagos/'; then
-              PAGOS=true
-            fi
-
-            # Cambios globales que requieren escanear todos los módulos
-            if echo "$CHANGED_FILES" | grep -qE \
-              '^src/Shared/|^scripts/|^\.github/workflows/|^veracode\.yml$|^veracode\.discover\.example\.yml$|\.sln$|Directory\.Build\.props$|Directory\.Build\.targets$|Directory\.Packages\.props$'; then
-              ALL_MODULES=true
-            fi
           fi
 
-          echo "clientes=$CLIENTES" >> "$GITHUB_OUTPUT"
-          echo "reservas=$RESERVAS" >> "$GITHUB_OUTPUT"
-          echo "pagos=$PAGOS" >> "$GITHUB_OUTPUT"
-          echo "all_modules=$ALL_MODULES" >> "$GITHUB_OUTPUT"
+          echo "clientes=${CLIENTES}" >> "$GITHUB_OUTPUT"
+          echo "reservas=${RESERVAS}" >> "$GITHUB_OUTPUT"
+          echo "pagos=${PAGOS}" >> "$GITHUB_OUTPUT"
+          echo "all_modules=${ALL_MODULES}" >> "$GITHUB_OUTPUT"
 
-          echo "========================================="
-          echo "Resultado de detección:"
-          echo "Clientes: $CLIENTES"
-          echo "Reservas: $RESERVAS"
-          echo "Pagos: $PAGOS"
-          echo "Todos los módulos: $ALL_MODULES"
-          echo "========================================="
+          echo ""
+          echo "Resultado:"
+          echo "Clientes: ${CLIENTES}"
+          echo "Reservas: ${RESERVAS}"
+          echo "Pagos: ${PAGOS}"
+          echo "Todos los módulos: ${ALL_MODULES}"
 
   # ============================================================
-  # 2. Validar compilación de la solución completa
+  # Compilación general
   # ============================================================
-
   build:
-    name: Build solution
-    needs: detect-changes
+    name: Build de la solución
     runs-on: ubuntu-latest
+    needs: detect-changes
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup .NET
+      - name: Configurar .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: Restore
+      - name: Restaurar dependencias
         run: dotnet restore ModularVeracodeDemo.sln
 
-      - name: Build
+      - name: Compilar solución
         run: |
           dotnet build ModularVeracodeDemo.sln \
-            --configuration "${{ env.CONFIGURATION }}" \
+            --configuration "${{ env.BUILD_CONFIGURATION }}" \
             --no-restore
 
   # ============================================================
-  # 3. AutoPackage - Clientes
+  # Empaquetar Clientes
   # ============================================================
-
   package-clientes:
-    name: AutoPackage - Clientes
+    name: Empaquetar Clientes
+    runs-on: ubuntu-latest
     needs:
       - detect-changes
       - build
-
-    if: >
-      needs.detect-changes.outputs.clientes == 'true' ||
-      needs.detect-changes.outputs.all_modules == 'true' ||
-      needs.detect-changes.outputs.force_all == 'true'
-
-    runs-on: ubuntu-latest
+    if: needs.detect-changes.outputs.clientes == 'true'
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup .NET
+      - name: Configurar .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
-
-      - name: Restore
-        run: dotnet restore ModularVeracodeDemo.sln
 
       - name: Instalar Veracode CLI
         shell: bash
         run: |
-          set -euo pipefail
+          curl -fsSL https://tools.veracode.com/veracode-cli/install \
+            | sh
 
-          curl -fsS https://tools.veracode.com/veracode-cli/install | sh
+          echo "$HOME/.veracode-cli" >> "$GITHUB_PATH"
 
-          if [ -f "./veracode" ]; then
-            chmod +x ./veracode
-          fi
+      - name: Crear directorio de artefactos
+        run: mkdir -p artifacts/veracode
 
-      - name: Verificar Veracode CLI
+      - name: Empaquetar módulo Clientes con AutoPackager
         shell: bash
         run: |
-          set -euo pipefail
+          veracode package \
+            --source src/Modules/Clientes/VeracodeDemo.Clientes.Api \
+            --type directory \
+            --trust \
+            --verbose \
+            --output artifacts/veracode/clientes
 
-          if [ -x "./veracode" ]; then
-            ./veracode --version || ./veracode --help
-          elif command -v veracode >/dev/null 2>&1; then
-            veracode --version || veracode --help
-          else
-            echo "No se encontró el ejecutable de Veracode CLI."
+      - name: Localizar paquete generado
+        shell: bash
+        run: |
+          PACKAGE="$(find artifacts/veracode/clientes -type f \( -name '*.zip' -o -name '*.jar' -o -name '*.war' \) | head -n 1)"
+
+          if [[ -z "${PACKAGE}" ]]; then
+            echo "No se encontró ningún paquete generado por AutoPackager."
+            find artifacts/veracode/clientes -type f
             exit 1
           fi
 
-      - name: Ejecutar AutoPackaging para Clientes
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          SOURCE_PATH="src/Modules/Clientes/VeracodeDemo.Clientes.Api"
-          OUTPUT_DIR="artifacts/autopackage/clientes"
-          FINAL_DIR="artifacts/veracode"
-
-          rm -rf "$OUTPUT_DIR"
-          mkdir -p "$OUTPUT_DIR"
-          mkdir -p "$FINAL_DIR"
-
-          if [ -x "./veracode" ]; then
-            ./veracode package \
-              --source "$SOURCE_PATH" \
-              --type directory \
-              --trust \
-              --verbose \
-              --output "$OUTPUT_DIR"
-          else
-            veracode package \
-              --source "$SOURCE_PATH" \
-              --type directory \
-              --trust \
-              --verbose \
-              --output "$OUTPUT_DIR"
-          fi
-
-          PACKAGE_FILE="$(find "$OUTPUT_DIR" -type f -iname '*.zip' | head -n 1)"
-
-          if [ -z "$PACKAGE_FILE" ]; then
-            echo "AutoPackaging no generó un archivo ZIP para Clientes."
-            echo "Contenido generado:"
-            find "$OUTPUT_DIR" -maxdepth 5 -type f -print || true
-            exit 1
-          fi
-
-          cp "$PACKAGE_FILE" "$FINAL_DIR/clientes.zip"
-
-          echo "Paquete generado para Clientes:"
-          ls -lh "$FINAL_DIR/clientes.zip"
-
-      - name: Verificar paquete Clientes
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          test -f "artifacts/veracode/clientes.zip"
-          test -s "artifacts/veracode/clientes.zip"
-
-          echo "Paquete Clientes listo:"
-          ls -lh artifacts/veracode/clientes.zip
+          echo "Paquete encontrado: ${PACKAGE}"
+          cp "${PACKAGE}" artifacts/veracode/clientes.zip
 
       - name: Subir artefacto Clientes
         uses: actions/upload-artifact@v4
@@ -274,112 +225,59 @@ jobs:
           if-no-files-found: error
 
   # ============================================================
-  # 4. AutoPackage - Reservas
+  # Empaquetar Reservas
   # ============================================================
-
   package-reservas:
-    name: AutoPackage - Reservas
+    name: Empaquetar Reservas
+    runs-on: ubuntu-latest
     needs:
       - detect-changes
       - build
-
-    if: >
-      needs.detect-changes.outputs.reservas == 'true' ||
-      needs.detect-changes.outputs.all_modules == 'true' ||
-      needs.detect-changes.outputs.force_all == 'true'
-
-    runs-on: ubuntu-latest
+    if: needs.detect-changes.outputs.reservas == 'true'
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup .NET
+      - name: Configurar .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: Restore
-        run: dotnet restore ModularVeracodeDemo.sln
-
       - name: Instalar Veracode CLI
         shell: bash
         run: |
-          set -euo pipefail
+          curl -fsSL https://tools.veracode.com/veracode-cli/install \
+            | sh
 
-          curl -fsS https://tools.veracode.com/veracode-cli/install | sh
+          echo "$HOME/.veracode-cli" >> "$GITHUB_PATH"
 
-          if [ -f "./veracode" ]; then
-            chmod +x ./veracode
-          fi
+      - name: Crear directorio de artefactos
+        run: mkdir -p artifacts/veracode
 
-      - name: Verificar Veracode CLI
+      - name: Empaquetar módulo Reservas con AutoPackager
         shell: bash
         run: |
-          set -euo pipefail
+          veracode package \
+            --source src/Modules/Reservas/VeracodeDemo.Reservas.Api \
+            --type directory \
+            --trust \
+            --verbose \
+            --output artifacts/veracode/reservas
 
-          if [ -x "./veracode" ]; then
-            ./veracode --version || ./veracode --help
-          elif command -v veracode >/dev/null 2>&1; then
-            veracode --version || veracode --help
-          else
-            echo "No se encontró el ejecutable de Veracode CLI."
+      - name: Localizar paquete generado
+        shell: bash
+        run: |
+          PACKAGE="$(find artifacts/veracode/reservas -type f \( -name '*.zip' -o -name '*.jar' -o -name '*.war' \) | head -n 1)"
+
+          if [[ -z "${PACKAGE}" ]]; then
+            echo "No se encontró ningún paquete generado por AutoPackager."
+            find artifacts/veracode/reservas -type f
             exit 1
           fi
 
-      - name: Ejecutar AutoPackaging para Reservas
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          SOURCE_PATH="src/Modules/Reservas/VeracodeDemo.Reservas.Api"
-          OUTPUT_DIR="artifacts/autopackage/reservas"
-          FINAL_DIR="artifacts/veracode"
-
-          rm -rf "$OUTPUT_DIR"
-          mkdir -p "$OUTPUT_DIR"
-          mkdir -p "$FINAL_DIR"
-
-          if [ -x "./veracode" ]; then
-            ./veracode package \
-              --source "$SOURCE_PATH" \
-              --type directory \
-              --trust \
-              --verbose \
-              --output "$OUTPUT_DIR"
-          else
-            veracode package \
-              --source "$SOURCE_PATH" \
-              --type directory \
-              --trust \
-              --verbose \
-              --output "$OUTPUT_DIR"
-          fi
-
-          PACKAGE_FILE="$(find "$OUTPUT_DIR" -type f -iname '*.zip' | head -n 1)"
-
-          if [ -z "$PACKAGE_FILE" ]; then
-            echo "AutoPackaging no generó un archivo ZIP para Reservas."
-            echo "Contenido generado:"
-            find "$OUTPUT_DIR" -maxdepth 5 -type f -print || true
-            exit 1
-          fi
-
-          cp "$PACKAGE_FILE" "$FINAL_DIR/reservas.zip"
-
-          echo "Paquete generado para Reservas:"
-          ls -lh "$FINAL_DIR/reservas.zip"
-
-      - name: Verificar paquete Reservas
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          test -f "artifacts/veracode/reservas.zip"
-          test -s "artifacts/veracode/reservas.zip"
-
-          echo "Paquete Reservas listo:"
-          ls -lh artifacts/veracode/reservas.zip
+          echo "Paquete encontrado: ${PACKAGE}"
+          cp "${PACKAGE}" artifacts/veracode/reservas.zip
 
       - name: Subir artefacto Reservas
         uses: actions/upload-artifact@v4
@@ -389,112 +287,59 @@ jobs:
           if-no-files-found: error
 
   # ============================================================
-  # 5. AutoPackage - Pagos
+  # Empaquetar Pagos
   # ============================================================
-
   package-pagos:
-    name: AutoPackage - Pagos
+    name: Empaquetar Pagos
+    runs-on: ubuntu-latest
     needs:
       - detect-changes
       - build
-
-    if: >
-      needs.detect-changes.outputs.pagos == 'true' ||
-      needs.detect-changes.outputs.all_modules == 'true' ||
-      needs.detect-changes.outputs.force_all == 'true'
-
-    runs-on: ubuntu-latest
+    if: needs.detect-changes.outputs.pagos == 'true'
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup .NET
+      - name: Configurar .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: Restore
-        run: dotnet restore ModularVeracodeDemo.sln
-
       - name: Instalar Veracode CLI
         shell: bash
         run: |
-          set -euo pipefail
+          curl -fsSL https://tools.veracode.com/veracode-cli/install \
+            | sh
 
-          curl -fsS https://tools.veracode.com/veracode-cli/install | sh
+          echo "$HOME/.veracode-cli" >> "$GITHUB_PATH"
 
-          if [ -f "./veracode" ]; then
-            chmod +x ./veracode
-          fi
+      - name: Crear directorio de artefactos
+        run: mkdir -p artifacts/veracode
 
-      - name: Verificar Veracode CLI
+      - name: Empaquetar módulo Pagos con AutoPackager
         shell: bash
         run: |
-          set -euo pipefail
+          veracode package \
+            --source src/Modules/Pagos/VeracodeDemo.Pagos.Api \
+            --type directory \
+            --trust \
+            --verbose \
+            --output artifacts/veracode/pagos
 
-          if [ -x "./veracode" ]; then
-            ./veracode --version || ./veracode --help
-          elif command -v veracode >/dev/null 2>&1; then
-            veracode --version || veracode --help
-          else
-            echo "No se encontró el ejecutable de Veracode CLI."
+      - name: Localizar paquete generado
+        shell: bash
+        run: |
+          PACKAGE="$(find artifacts/veracode/pagos -type f \( -name '*.zip' -o -name '*.jar' -o -name '*.war' \) | head -n 1)"
+
+          if [[ -z "${PACKAGE}" ]]; then
+            echo "No se encontró ningún paquete generado por AutoPackager."
+            find artifacts/veracode/pagos -type f
             exit 1
           fi
 
-      - name: Ejecutar AutoPackaging para Pagos
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          SOURCE_PATH="src/Modules/Pagos/VeracodeDemo.Pagos.Api"
-          OUTPUT_DIR="artifacts/autopackage/pagos"
-          FINAL_DIR="artifacts/veracode"
-
-          rm -rf "$OUTPUT_DIR"
-          mkdir -p "$OUTPUT_DIR"
-          mkdir -p "$FINAL_DIR"
-
-          if [ -x "./veracode" ]; then
-            ./veracode package \
-              --source "$SOURCE_PATH" \
-              --type directory \
-              --trust \
-              --verbose \
-              --output "$OUTPUT_DIR"
-          else
-            veracode package \
-              --source "$SOURCE_PATH" \
-              --type directory \
-              --trust \
-              --verbose \
-              --output "$OUTPUT_DIR"
-          fi
-
-          PACKAGE_FILE="$(find "$OUTPUT_DIR" -type f -iname '*.zip' | head -n 1)"
-
-          if [ -z "$PACKAGE_FILE" ]; then
-            echo "AutoPackaging no generó un archivo ZIP para Pagos."
-            echo "Contenido generado:"
-            find "$OUTPUT_DIR" -maxdepth 5 -type f -print || true
-            exit 1
-          fi
-
-          cp "$PACKAGE_FILE" "$FINAL_DIR/pagos.zip"
-
-          echo "Paquete generado para Pagos:"
-          ls -lh "$FINAL_DIR/pagos.zip"
-
-      - name: Verificar paquete Pagos
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          test -f "artifacts/veracode/pagos.zip"
-          test -s "artifacts/veracode/pagos.zip"
-
-          echo "Paquete Pagos listo:"
-          ls -lh artifacts/veracode/pagos.zip
+          echo "Paquete encontrado: ${PACKAGE}"
+          cp "${PACKAGE}" artifacts/veracode/pagos.zip
 
       - name: Subir artefacto Pagos
         uses: actions/upload-artifact@v4
@@ -504,130 +349,100 @@ jobs:
           if-no-files-found: error
 
   # ============================================================
-  # 6. Pipeline Scan - Clientes
+  # Pipeline Scan - Clientes
   # ============================================================
-
   scan-clientes:
     name: Pipeline Scan - Clientes
-    needs: package-clientes
-    if: needs.package-clientes.result == 'success'
+    needs:
+      - detect-changes
+      - package-clientes
+    if: needs.detect-changes.outputs.clientes == 'true'
 
     uses: ./.github/workflows/veracode-pipeline-scan.yml
-
     with:
       artifact_name: veracode-artifact-clientes
-      veracode_policy_name: "Politica Restrictiva"
+      veracode_policy_name: 'Politica Restrictiva'
+      output_file: veracode-clientes-results.json
       json_output: true
-      output_file: clientes-veracode-results.json
       fail_build: false
       verbose: true
-
     secrets: inherit
 
   # ============================================================
-  # 7. Pipeline Scan - Reservas
+  # Pipeline Scan - Reservas
   # ============================================================
-
   scan-reservas:
     name: Pipeline Scan - Reservas
-    needs: package-reservas
-    if: needs.package-reservas.result == 'success'
+    needs:
+      - detect-changes
+      - package-reservas
+    if: needs.detect-changes.outputs.reservas == 'true'
 
     uses: ./.github/workflows/veracode-pipeline-scan.yml
-
     with:
       artifact_name: veracode-artifact-reservas
-      veracode_policy_name: "Politica Restrictiva"
+      veracode_policy_name: 'Politica Restrictiva'
+      output_file: veracode-reservas-results.json
       json_output: true
-      output_file: reservas-veracode-results.json
       fail_build: false
       verbose: true
-
     secrets: inherit
 
   # ============================================================
-  # 8. Pipeline Scan - Pagos
+  # Pipeline Scan - Pagos
   # ============================================================
-
   scan-pagos:
     name: Pipeline Scan - Pagos
-    needs: package-pagos
-    if: needs.package-pagos.result == 'success'
+    needs:
+      - detect-changes
+      - package-pagos
+    if: needs.detect-changes.outputs.pagos == 'true'
 
     uses: ./.github/workflows/veracode-pipeline-scan.yml
-
     with:
       artifact_name: veracode-artifact-pagos
-      veracode_policy_name: "Politica Restrictiva"
+      veracode_policy_name: 'Politica Restrictiva'
+      output_file: veracode-pagos-results.json
       json_output: true
-      output_file: pagos-veracode-results.json
       fail_build: false
       verbose: true
-
     secrets: inherit
 
   # ============================================================
-  # 9. SCA Scan - Clientes
+  # SCA - Clientes
   # ============================================================
-
   sca-clientes:
-    name: SCA Scan - Clientes
-    needs:
-      - detect-changes
-      - build
-
-    if: >
-      needs.detect-changes.outputs.clientes == 'true' ||
-      needs.detect-changes.outputs.all_modules == 'true' ||
-      needs.detect-changes.outputs.force_all == 'true'
+    name: SCA - Clientes
+    needs: detect-changes
+    if: needs.detect-changes.outputs.clientes == 'true'
 
     uses: ./.github/workflows/veracode-sca-scan.yml
-
     with:
       path: src/Modules/Clientes/VeracodeDemo.Clientes.Api
-
     secrets: inherit
 
   # ============================================================
-  # 10. SCA Scan - Reservas
+  # SCA - Reservas
   # ============================================================
-
   sca-reservas:
-    name: SCA Scan - Reservas
-    needs:
-      - detect-changes
-      - build
-
-    if: >
-      needs.detect-changes.outputs.reservas == 'true' ||
-      needs.detect-changes.outputs.all_modules == 'true' ||
-      needs.detect-changes.outputs.force_all == 'true'
+    name: SCA - Reservas
+    needs: detect-changes
+    if: needs.detect-changes.outputs.reservas == 'true'
 
     uses: ./.github/workflows/veracode-sca-scan.yml
-
     with:
       path: src/Modules/Reservas/VeracodeDemo.Reservas.Api
-
     secrets: inherit
 
   # ============================================================
-  # 11. SCA Scan - Pagos
+  # SCA - Pagos
   # ============================================================
-
   sca-pagos:
-    name: SCA Scan - Pagos
-    needs:
-      - detect-changes
-      - build
-
-    if: >
-      needs.detect-changes.outputs.pagos == 'true' ||
-      needs.detect-changes.outputs.all_modules == 'true' ||
-      needs.detect-changes.outputs.force_all == 'true'
+    name: SCA - Pagos
+    needs: detect-changes
+    if: needs.detect-changes.outputs.pagos == 'true'
 
     uses: ./.github/workflows/veracode-sca-scan.yml
-
     with:
       path: src/Modules/Pagos/VeracodeDemo.Pagos.Api
-
     secrets: inherit
