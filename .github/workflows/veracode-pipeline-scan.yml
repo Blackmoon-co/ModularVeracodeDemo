@@ -9,7 +9,7 @@ permissions:
 on:
   workflow_call:
     inputs:
-      veracode_policy_name:
+      policy_name:
         required: true
         type: string
       json_output:
