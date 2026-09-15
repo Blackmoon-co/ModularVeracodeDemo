@@ -66,7 +66,7 @@ jobs:
           json_output: ${{ inputs.json_output }}
           verbose: ${{ inputs.verbose }}
           json_output_file: ${{ inputs.output_file }}
-          veracode_policy_name: ${{ inputs.veracode_policy_name }}
+          veracode_policy_name: ${{ inputs.policy_name }}
           fail_build: ${{ inputs.fail_build }}
          
       - name: Upload Veracode results

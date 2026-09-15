@@ -1,0 +1,171 @@
+name: Veracode AutoPackage
+
+on:
+  workflow_call:
+    inputs:
+      module_name:
+        description: "Nombre del módulo"
+        required: true
+        type: string
+
+      source_path:
+        description: "Ruta del módulo que será empaquetado"
+        required: true
+        type: string
+
+      output_name:
+        description: "Nombre final del ZIP"
+        required: true
+        type: string
+
+      dotnet_version:
+        description: "Versión de .NET"
+        required: false
+        type: string
+        default: "8.0.x"
+
+    outputs:
+      artifact_name:
+        description: "Nombre del artefacto publicado"
+        value: ${{ jobs.package.outputs.artifact_name }}
+
+      package_path:
+        description: "Ruta del paquete generado"
+        value: ${{ jobs.package.outputs.package_path }}
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: AutoPackage - ${{ inputs.module_name }}
+    runs-on: ubuntu-latest
+
+    outputs:
+      artifact_name: ${{ steps.package.outputs.artifact_name }}
+      package_path: ${{ steps.package.outputs.package_path }}
+
+    env:
+      DOTNET_VERSION: ${{ inputs.dotnet_version }}
+      SOURCE_PATH: ${{ inputs.source_path }}
+      OUTPUT_NAME: ${{ inputs.output_name }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ inputs.dotnet_version }}
+
+      - name: Instalar Veracode CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl -fsSL https://tools.veracode.com/veracode-cli/install | sh
+
+          echo "Contenido del workspace:"
+          ls -la "$GITHUB_WORKSPACE"
+
+          echo "Buscando ejecutable Veracode CLI..."
+
+          VERACODE_BIN="$(command -v veracode || true)"
+
+          if [ -z "$VERACODE_BIN" ] && [ -x "$GITHUB_WORKSPACE/veracode" ]; then
+            VERACODE_BIN="$GITHUB_WORKSPACE/veracode"
+          fi
+
+          if [ -z "$VERACODE_BIN" ]; then
+            VERACODE_BIN="$(
+              find "$GITHUB_WORKSPACE" "$HOME" \
+                -type f \
+                -name "veracode" \
+                -perm -111 \
+                -print \
+                -quit 2>/dev/null || true
+            )"
+          fi
+
+          if [ -z "$VERACODE_BIN" ]; then
+            echo "ERROR: No se encontró el ejecutable Veracode CLI."
+
+            echo "Archivos candidatos encontrados:"
+            find "$GITHUB_WORKSPACE" "$HOME" \
+              -type f \
+              -iname "*veracode*" \
+              -print 2>/dev/null || true
+
+            exit 1
+          fi
+
+          echo "Veracode CLI encontrado en: $VERACODE_BIN"
+
+          chmod +x "$VERACODE_BIN"
+
+          echo "VERACODE_BIN=$VERACODE_BIN" >> "$GITHUB_ENV"
+
+          echo "Versión instalada:"
+          "$VERACODE_BIN" version
+
+      - name: Ejecutar AutoPackage
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          OUTPUT_DIR="$GITHUB_WORKSPACE/artifacts/veracode/$OUTPUT_NAME"
+
+          mkdir -p "$OUTPUT_DIR"
+
+          echo "Módulo: ${{ inputs.module_name }}"
+          echo "Source: $SOURCE_PATH"
+          echo "Output: $OUTPUT_DIR"
+
+          "$VERACODE_BIN" package \
+            --source "$SOURCE_PATH" \
+            --type directory \
+            --trust \
+            --verbose \
+            --output "$OUTPUT_DIR"
+
+          echo "Contenido generado:"
+          find "$OUTPUT_DIR" -maxdepth 3 -type f -print
+
+          PACKAGE_FILE="$(
+            find "$OUTPUT_DIR" \
+              -type f \
+              \( \
+                -name "*.zip" -o \
+                -name "*.jar" -o \
+                -name "*.war" \
+              \) \
+              -print -quit
+          )"
+
+          if [ -z "$PACKAGE_FILE" ]; then
+            echo "ERROR: AutoPackage no generó un archivo ZIP/JAR/WAR."
+            exit 1
+          fi
+
+          FINAL_DIR="$GITHUB_WORKSPACE/artifacts/veracode/final"
+          FINAL_FILE="$FINAL_DIR/${OUTPUT_NAME}.zip"
+
+          mkdir -p "$FINAL_DIR"
+
+          cp "$PACKAGE_FILE" "$FINAL_FILE"
+
+          echo "Paquete final:"
+          ls -lh "$FINAL_FILE"
+
+          echo "artifact_name=veracode-${OUTPUT_NAME}" >> "$GITHUB_OUTPUT"
+          echo "package_path=$FINAL_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Publicar artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: veracode-${{ inputs.output_name }}
+          path: artifacts/veracode/final/${{ inputs.output_name }}.zip
+          if-no-files-found: error
+          retention-days: 7
