@@ -32,10 +32,10 @@ jobs:
     runs-on: ubuntu-latest
 
     outputs:
-      clientes: ${{ steps.filter.outputs.clientes }}
-      reservas: ${{ steps.filter.outputs.reservas }}
-      pagos: ${{ steps.filter.outputs.pagos }}
-      all_modules: ${{ steps.filter.outputs.all_modules }}
+      clientes: ${{ steps.changes.outputs.clientes }}
+      reservas: ${{ steps.changes.outputs.reservas }}
+      pagos: ${{ steps.changes.outputs.pagos }}
+      all_modules: ${{ steps.changes.outputs.all_modules }}
       force_all: ${{ steps.manual.outputs.force_all }}
 
     steps:
@@ -54,36 +54,85 @@ jobs:
             echo "force_all=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Detectar cambios por rutas
-        id: filter
-        uses: dorny/paths-filter@v3
-        with:
-          filters: |
-            clientes:
-              - 'src/Modules/Clientes/**'
+      - name: Detectar cambios por Git
+        id: changes
+        shell: bash
+        run: |
+          set -euo pipefail
 
-            reservas:
-              - 'src/Modules/Reservas/**'
+          CLIENTES=false
+          RESERVAS=false
+          PAGOS=false
+          ALL_MODULES=false
 
-            pagos:
-              - 'src/Modules/Pagos/**'
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            CLIENTES=true
+            RESERVAS=true
+            PAGOS=true
+            ALL_MODULES=true
+          else
+            if [ "${{ github.event_name }}" = "pull_request" ]; then
+              BASE_SHA="${{ github.event.pull_request.base.sha }}"
+              HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+            else
+              BASE_SHA="${{ github.event.before }}"
+              HEAD_SHA="${{ github.sha }}"
+            fi
 
-            all_modules:
-              - 'src/Shared/**'
-              - 'scripts/**'
-              - 'veracode.yml'
-              - 'veracode.discover.example.yml'
-              - '.github/workflows/**'
-              - '*.sln'
-              - '**/Directory.Build.props'
-              - '**/Directory.Build.targets'
-              - '**/Directory.Packages.props'
+            # En algunos casos GitHub entrega un SHA compuesto
+            # solamente por ceros, por ejemplo en el primer push.
+            if [ -z "$BASE_SHA" ] || [[ "$BASE_SHA" =~ ^0+$ ]]; then
+              BASE_SHA="$(git rev-list --max-parents=0 HEAD)"
+            fi
+
+            echo "Evento: ${{ github.event_name }}"
+            echo "BASE_SHA: $BASE_SHA"
+            echo "HEAD_SHA: $HEAD_SHA"
+
+            CHANGED_FILES="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" || true)"
+
+            echo "========================================="
+            echo "Archivos modificados:"
+            echo "$CHANGED_FILES"
+            echo "========================================="
+
+            # Cambios dentro del módulo Clientes
+            if echo "$CHANGED_FILES" | grep -qE '^src/Modules/Clientes/'; then
+              CLIENTES=true
+            fi
+
+            # Cambios dentro del módulo Reservas
+            if echo "$CHANGED_FILES" | grep -qE '^src/Modules/Reservas/'; then
+              RESERVAS=true
+            fi
+
+            # Cambios dentro del módulo Pagos
+            if echo "$CHANGED_FILES" | grep -qE '^src/Modules/Pagos/'; then
+              PAGOS=true
+            fi
+
+            # Cambios globales que requieren escanear todos los módulos
+            if echo "$CHANGED_FILES" | grep -qE \
+              '^src/Shared/|^scripts/|^\.github/workflows/|^veracode\.yml$|^veracode\.discover\.example\.yml$|\.sln$|Directory\.Build\.props$|Directory\.Build\.targets$|Directory\.Packages\.props$'; then
+              ALL_MODULES=true
+            fi
+          fi
+
+          echo "clientes=$CLIENTES" >> "$GITHUB_OUTPUT"
+          echo "reservas=$RESERVAS" >> "$GITHUB_OUTPUT"
+          echo "pagos=$PAGOS" >> "$GITHUB_OUTPUT"
+          echo "all_modules=$ALL_MODULES" >> "$GITHUB_OUTPUT"
+
+          echo "========================================="
+          echo "Resultado de detección:"
+          echo "Clientes: $CLIENTES"
+          echo "Reservas: $RESERVAS"
+          echo "Pagos: $PAGOS"
+          echo "Todos los módulos: $ALL_MODULES"
+          echo "========================================="
 
   # ============================================================
   # 2. Validar compilación de la solución completa
-  #
-  # Este build valida que la solución compile.
-  # No significa que todos los módulos deban escanearse.
   # ============================================================
 
   build:
@@ -119,7 +168,7 @@ jobs:
       - detect-changes
       - build
 
-    if: |
+    if: >
       needs.detect-changes.outputs.clientes == 'true' ||
       needs.detect-changes.outputs.all_modules == 'true' ||
       needs.detect-changes.outputs.force_all == 'true'
@@ -197,7 +246,7 @@ jobs:
           if [ -z "$PACKAGE_FILE" ]; then
             echo "AutoPackaging no generó un archivo ZIP para Clientes."
             echo "Contenido generado:"
-            find "$OUTPUT_DIR" -maxdepth 4 -type f -print || true
+            find "$OUTPUT_DIR" -maxdepth 5 -type f -print || true
             exit 1
           fi
 
@@ -234,7 +283,7 @@ jobs:
       - detect-changes
       - build
 
-    if: |
+    if: >
       needs.detect-changes.outputs.reservas == 'true' ||
       needs.detect-changes.outputs.all_modules == 'true' ||
       needs.detect-changes.outputs.force_all == 'true'
@@ -312,7 +361,7 @@ jobs:
           if [ -z "$PACKAGE_FILE" ]; then
             echo "AutoPackaging no generó un archivo ZIP para Reservas."
             echo "Contenido generado:"
-            find "$OUTPUT_DIR" -maxdepth 4 -type f -print || true
+            find "$OUTPUT_DIR" -maxdepth 5 -type f -print || true
             exit 1
           fi
 
@@ -349,7 +398,7 @@ jobs:
       - detect-changes
       - build
 
-    if: |
+    if: >
       needs.detect-changes.outputs.pagos == 'true' ||
       needs.detect-changes.outputs.all_modules == 'true' ||
       needs.detect-changes.outputs.force_all == 'true'
@@ -427,7 +476,7 @@ jobs:
           if [ -z "$PACKAGE_FILE" ]; then
             echo "AutoPackaging no generó un archivo ZIP para Pagos."
             echo "Contenido generado:"
-            find "$OUTPUT_DIR" -maxdepth 4 -type f -print || true
+            find "$OUTPUT_DIR" -maxdepth 5 -type f -print || true
             exit 1
           fi
 
@@ -467,7 +516,7 @@ jobs:
 
     with:
       artifact_name: veracode-artifact-clientes
-      veracode_policy_name: 'Politica Restritiva'
+      veracode_policy_name: "Politica Restrictiva"
       json_output: true
       output_file: clientes-veracode-results.json
       fail_build: false
@@ -488,7 +537,7 @@ jobs:
 
     with:
       artifact_name: veracode-artifact-reservas
-      veracode_policy_name: 'Politica Restritiva'
+      veracode_policy_name: "Politica Restrictiva"
       json_output: true
       output_file: reservas-veracode-results.json
       fail_build: false
@@ -509,10 +558,76 @@ jobs:
 
     with:
       artifact_name: veracode-artifact-pagos
-      veracode_policy_name: 'Politica Restritiva'
+      veracode_policy_name: "Politica Restrictiva"
       json_output: true
       output_file: pagos-veracode-results.json
       fail_build: false
       verbose: true
+
+    secrets: inherit
+
+  # ============================================================
+  # 9. SCA Scan - Clientes
+  # ============================================================
+
+  sca-clientes:
+    name: SCA Scan - Clientes
+    needs:
+      - detect-changes
+      - build
+
+    if: >
+      needs.detect-changes.outputs.clientes == 'true' ||
+      needs.detect-changes.outputs.all_modules == 'true' ||
+      needs.detect-changes.outputs.force_all == 'true'
+
+    uses: ./.github/workflows/veracode-sca-scan.yml
+
+    with:
+      path: src/Modules/Clientes/VeracodeDemo.Clientes.Api
+
+    secrets: inherit
+
+  # ============================================================
+  # 10. SCA Scan - Reservas
+  # ============================================================
+
+  sca-reservas:
+    name: SCA Scan - Reservas
+    needs:
+      - detect-changes
+      - build
+
+    if: >
+      needs.detect-changes.outputs.reservas == 'true' ||
+      needs.detect-changes.outputs.all_modules == 'true' ||
+      needs.detect-changes.outputs.force_all == 'true'
+
+    uses: ./.github/workflows/veracode-sca-scan.yml
+
+    with:
+      path: src/Modules/Reservas/VeracodeDemo.Reservas.Api
+
+    secrets: inherit
+
+  # ============================================================
+  # 11. SCA Scan - Pagos
+  # ============================================================
+
+  sca-pagos:
+    name: SCA Scan - Pagos
+    needs:
+      - detect-changes
+      - build
+
+    if: >
+      needs.detect-changes.outputs.pagos == 'true' ||
+      needs.detect-changes.outputs.all_modules == 'true' ||
+      needs.detect-changes.outputs.force_all == 'true'
+
+    uses: ./.github/workflows/veracode-sca-scan.yml
+
+    with:
+      path: src/Modules/Pagos/VeracodeDemo.Pagos.Api
 
     secrets: inherit
