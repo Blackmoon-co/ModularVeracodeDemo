@@ -32,7 +32,7 @@ env:
 jobs:
 
   # ============================================================
-  # Detectar módulos modificados
+  # Detectar cambios
   # ============================================================
   detect-changes:
     name: Detectar cambios
@@ -82,12 +82,14 @@ jobs:
             HEAD_SHA="${CURRENT_SHA}"
           fi
 
-          # En algunos push iniciales GitHub utiliza un SHA vacío.
           if [[ -z "${BASE_SHA}" || "${BASE_SHA}" == "0000000000000000000000000000000000000000" ]]; then
-            echo "No existe SHA anterior. Se escanearán todos los módulos."
+            echo "No existe SHA anterior. Se analizarán todos los módulos."
             CHANGED_FILES="$(git ls-files)"
           else
-            echo "Comparando ${BASE_SHA} contra ${HEAD_SHA}"
+            echo "Comparando:"
+            echo "Base: ${BASE_SHA}"
+            echo "Head: ${HEAD_SHA}"
+
             CHANGED_FILES="$(git diff --name-only "${BASE_SHA}" "${HEAD_SHA}")"
           fi
 
@@ -99,21 +101,23 @@ jobs:
           PAGOS=false
           ALL_MODULES=false
 
-          # Cambios globales que afectan todos los módulos.
+          # Cambios transversales que afectan a todos los módulos.
           if echo "${CHANGED_FILES}" | grep -Eq \
             '^(src/Shared/|.*\.sln$|.*\.props$|.*\.targets$|global\.json$|NuGet\.config$|Directory\.Build\.(props|targets)$|\.github/|scripts/)'; then
             ALL_MODULES=true
           fi
 
-          # Cambios específicos por módulo.
+          # Cambios específicos del módulo Clientes.
           if echo "${CHANGED_FILES}" | grep -q '^src/Modules/Clientes/'; then
             CLIENTES=true
           fi
 
+          # Cambios específicos del módulo Reservas.
           if echo "${CHANGED_FILES}" | grep -q '^src/Modules/Reservas/'; then
             RESERVAS=true
           fi
 
+          # Cambios específicos del módulo Pagos.
           if echo "${CHANGED_FILES}" | grep -q '^src/Modules/Pagos/'; then
             PAGOS=true
           fi
@@ -130,14 +134,14 @@ jobs:
           echo "all_modules=${ALL_MODULES}" >> "$GITHUB_OUTPUT"
 
           echo ""
-          echo "Resultado:"
+          echo "Resultado de detección:"
           echo "Clientes: ${CLIENTES}"
           echo "Reservas: ${RESERVAS}"
           echo "Pagos: ${PAGOS}"
           echo "Todos los módulos: ${ALL_MODULES}"
 
   # ============================================================
-  # Compilación general
+  # Build general
   # ============================================================
   build:
     name: Build de la solución
@@ -185,15 +189,13 @@ jobs:
       - name: Instalar Veracode CLI
         shell: bash
         run: |
-          curl -fsSL https://tools.veracode.com/veracode-cli/install \
-            | sh
-
+          curl -fsSL https://tools.veracode.com/veracode-cli/install | sh
           echo "$HOME/.veracode-cli" >> "$GITHUB_PATH"
 
       - name: Crear directorio de artefactos
-        run: mkdir -p artifacts/veracode
+        run: mkdir -p artifacts/veracode/clientes
 
-      - name: Empaquetar módulo Clientes con AutoPackager
+      - name: Empaquetar Clientes con AutoPackager
         shell: bash
         run: |
           veracode package \
@@ -206,10 +208,13 @@ jobs:
       - name: Localizar paquete generado
         shell: bash
         run: |
-          PACKAGE="$(find artifacts/veracode/clientes -type f \( -name '*.zip' -o -name '*.jar' -o -name '*.war' \) | head -n 1)"
+          PACKAGE="$(find artifacts/veracode/clientes \
+            -type f \
+            \( -name '*.zip' -o -name '*.jar' -o -name '*.war' \) \
+            | head -n 1)"
 
           if [[ -z "${PACKAGE}" ]]; then
-            echo "No se encontró ningún paquete generado por AutoPackager."
+            echo "No se encontró el paquete de Clientes."
             find artifacts/veracode/clientes -type f
             exit 1
           fi
@@ -247,15 +252,13 @@ jobs:
       - name: Instalar Veracode CLI
         shell: bash
         run: |
-          curl -fsSL https://tools.veracode.com/veracode-cli/install \
-            | sh
-
+          curl -fsSL https://tools.veracode.com/veracode-cli/install | sh
           echo "$HOME/.veracode-cli" >> "$GITHUB_PATH"
 
       - name: Crear directorio de artefactos
-        run: mkdir -p artifacts/veracode
+        run: mkdir -p artifacts/veracode/reservas
 
-      - name: Empaquetar módulo Reservas con AutoPackager
+      - name: Empaquetar Reservas con AutoPackager
         shell: bash
         run: |
           veracode package \
@@ -268,10 +271,13 @@ jobs:
       - name: Localizar paquete generado
         shell: bash
         run: |
-          PACKAGE="$(find artifacts/veracode/reservas -type f \( -name '*.zip' -o -name '*.jar' -o -name '*.war' \) | head -n 1)"
+          PACKAGE="$(find artifacts/veracode/reservas \
+            -type f \
+            \( -name '*.zip' -o -name '*.jar' -o -name '*.war' \) \
+            | head -n 1)"
 
           if [[ -z "${PACKAGE}" ]]; then
-            echo "No se encontró ningún paquete generado por AutoPackager."
+            echo "No se encontró el paquete de Reservas."
             find artifacts/veracode/reservas -type f
             exit 1
           fi
@@ -309,15 +315,13 @@ jobs:
       - name: Instalar Veracode CLI
         shell: bash
         run: |
-          curl -fsSL https://tools.veracode.com/veracode-cli/install \
-            | sh
-
+          curl -fsSL https://tools.veracode.com/veracode-cli/install | sh
           echo "$HOME/.veracode-cli" >> "$GITHUB_PATH"
 
       - name: Crear directorio de artefactos
-        run: mkdir -p artifacts/veracode
+        run: mkdir -p artifacts/veracode/pagos
 
-      - name: Empaquetar módulo Pagos con AutoPackager
+      - name: Empaquetar Pagos con AutoPackager
         shell: bash
         run: |
           veracode package \
@@ -330,10 +334,13 @@ jobs:
       - name: Localizar paquete generado
         shell: bash
         run: |
-          PACKAGE="$(find artifacts/veracode/pagos -type f \( -name '*.zip' -o -name '*.jar' -o -name '*.war' \) | head -n 1)"
+          PACKAGE="$(find artifacts/veracode/pagos \
+            -type f \
+            \( -name '*.zip' -o -name '*.jar' -o -name '*.war' \) \
+            | head -n 1)"
 
           if [[ -z "${PACKAGE}" ]]; then
-            echo "No se encontró ningún paquete generado por AutoPackager."
+            echo "No se encontró el paquete de Pagos."
             find artifacts/veracode/pagos -type f
             exit 1
           fi
@@ -361,7 +368,7 @@ jobs:
     uses: ./.github/workflows/veracode-pipeline-scan.yml
     with:
       artifact_name: veracode-artifact-clientes
-      veracode_policy_name: 'Politica Restrictiva'
+      policy_name: "Politica Restrictiva"
       output_file: veracode-clientes-results.json
       json_output: true
       fail_build: false
@@ -381,7 +388,7 @@ jobs:
     uses: ./.github/workflows/veracode-pipeline-scan.yml
     with:
       artifact_name: veracode-artifact-reservas
-      veracode_policy_name: 'Politica Restrictiva'
+      policy_name: "Politica Restrictiva"
       output_file: veracode-reservas-results.json
       json_output: true
       fail_build: false
@@ -401,7 +408,7 @@ jobs:
     uses: ./.github/workflows/veracode-pipeline-scan.yml
     with:
       artifact_name: veracode-artifact-pagos
-      veracode_policy_name: 'Politica Restrictiva'
+      policy_name: "Politica Restrictiva"
       output_file: veracode-pagos-results.json
       json_output: true
       fail_build: false
