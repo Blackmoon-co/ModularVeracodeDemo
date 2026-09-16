@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - 'feature/**'
 
   pull_request:
     branches:
@@ -82,22 +83,27 @@ jobs:
           if [[ "${FORCE_ALL:-false}" == "true" ]]; then
             echo "Ejecución manual: se escanearán todos los módulos."
             ALL_MODULES="true"
+
           else
             if [[ -n "${BASE_SHA}" ]] &&
                [[ "${BASE_SHA}" != "0000000000000000000000000000000000000000" ]]; then
 
-              CHANGED_FILES=$(git diff --name-only "${BASE_SHA}" "${HEAD_SHA}")
+              CHANGED_FILES="$(
+                git diff --name-only "${BASE_SHA}" "${HEAD_SHA}"
+              )"
 
             else
-              CHANGED_FILES=$(git show \
-                --pretty="" \
-                --name-only \
-                "${HEAD_SHA}")
+              CHANGED_FILES="$(
+                git show \
+                  --pretty="" \
+                  --name-only \
+                  "${HEAD_SHA}"
+              )"
             fi
 
             echo ""
             echo "Archivos modificados:"
-            echo "--------------------"
+            echo "---------------------"
             echo "${CHANGED_FILES}"
             echo ""
 
@@ -177,10 +183,11 @@ jobs:
 
           echo ""
           echo "Resultado:"
+          echo "----------"
           echo "Clientes: ${CLIENTES}"
           echo "Reservas: ${RESERVAS}"
           echo "Pagos: ${PAGOS}"
-          echo "Todos: ${ALL_MODULES}"
+          echo "Todos los módulos: ${ALL_MODULES}"
 
   # ============================================================
   # 2. AutoPackage - Clientes
@@ -238,6 +245,7 @@ jobs:
 
   # ============================================================
   # 5. Pipeline Scan - Clientes
+  # Solo push a feature/*
   # ============================================================
   scan-clientes:
     name: Pipeline Scan Clientes
@@ -247,6 +255,8 @@ jobs:
 
     if: |
       always() &&
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/heads/feature/') &&
       needs.detect-changes.outputs.clientes == 'true' &&
       needs.package-clientes.result == 'success'
 
@@ -266,6 +276,7 @@ jobs:
 
   # ============================================================
   # 6. Pipeline Scan - Reservas
+  # Solo push a feature/*
   # ============================================================
   scan-reservas:
     name: Pipeline Scan Reservas
@@ -275,6 +286,8 @@ jobs:
 
     if: |
       always() &&
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/heads/feature/') &&
       needs.detect-changes.outputs.reservas == 'true' &&
       needs.package-reservas.result == 'success'
 
@@ -294,6 +307,7 @@ jobs:
 
   # ============================================================
   # 7. Pipeline Scan - Pagos
+  # Solo push a feature/*
   # ============================================================
   scan-pagos:
     name: Pipeline Scan Pagos
@@ -303,6 +317,8 @@ jobs:
 
     if: |
       always() &&
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/heads/feature/') &&
       needs.detect-changes.outputs.pagos == 'true' &&
       needs.package-pagos.result == 'success'
 
@@ -319,4 +335,3 @@ jobs:
     secrets:
       VERACODE_API_ID_REPO: ${{ secrets.VERACODE_API_ID_REPO }}
       VERACODE_API_KEY_SECRET_REPO: ${{ secrets.VERACODE_API_KEY_SECRET_REPO }}
-
