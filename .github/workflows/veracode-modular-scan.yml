@@ -20,6 +20,8 @@ on:
 permissions:
   contents: read
   actions: read
+  issues: write
+  security-events: write
 
 env:
   DOTNET_VERSION: "8.0.x"
@@ -60,7 +62,9 @@ jobs:
           pagos=false
           all_modules=false
 
-          # Ejecución manual con escaneo completo
+          # ======================================================
+          # Escaneo completo solicitado manualmente
+          # ======================================================
           if [[ "${FORCE_ALL:-false}" == "true" ]]; then
             echo "Escaneo completo solicitado manualmente."
 
@@ -68,7 +72,11 @@ jobs:
             reservas=true
             pagos=true
             all_modules=true
+
           else
+            # ====================================================
+            # Determinar commits base y actual
+            # ====================================================
             if [[ "${{ github.event_name }}" == "pull_request" ]]; then
               BASE_SHA="${{ github.event.pull_request.base.sha }}"
               HEAD_SHA="${{ github.event.pull_request.head.sha }}"
@@ -76,7 +84,7 @@ jobs:
               BASE_SHA="${{ github.event.before }}"
               HEAD_SHA="${{ github.sha }}"
 
-              # Push inicial o SHA inválido
+              # En caso de push inicial o SHA inválido
               if [[ -z "$BASE_SHA" || "$BASE_SHA" == "0000000000000000000000000000000000000000" ]]; then
                 BASE_SHA="$(git rev-list --max-parents=0 HEAD)"
               fi
@@ -91,10 +99,14 @@ jobs:
             echo "Archivos modificados:"
             echo "$CHANGED_FILES"
 
+            # ====================================================
+            # Clasificar archivos modificados
+            # ====================================================
             while IFS= read -r file; do
               [[ -z "$file" ]] && continue
 
               case "$file" in
+
                 src/Modules/Clientes/*)
                   clientes=true
                   ;;
@@ -118,10 +130,13 @@ jobs:
                 scripts/*)
                   all_modules=true
                   ;;
+
               esac
             done <<< "$CHANGED_FILES"
 
-            # Los cambios transversales afectan todos los módulos
+            # ====================================================
+            # Cambios transversales: escanear todos los módulos
+            # ====================================================
             if [[ "$all_modules" == "true" ]]; then
               clientes=true
               reservas=true
@@ -129,13 +144,18 @@ jobs:
             fi
           fi
 
+          # ======================================================
+          # Publicar outputs
+          # ======================================================
           echo "clientes=$clientes" >> "$GITHUB_OUTPUT"
           echo "reservas=$reservas" >> "$GITHUB_OUTPUT"
           echo "pagos=$pagos" >> "$GITHUB_OUTPUT"
           echo "all_modules=$all_modules" >> "$GITHUB_OUTPUT"
 
           echo ""
-          echo "Resultado de detección:"
+          echo "========================================"
+          echo "Resultado de detección"
+          echo "========================================"
           echo "Clientes: $clientes"
           echo "Reservas: $reservas"
           echo "Pagos: $pagos"
@@ -206,7 +226,6 @@ jobs:
       artifact_name: veracode-clientes
       policy_name: "Politica Restrictiva"
       output_file: clientes-results.txt
-      json_output: clientes-results.json
       fail_build: false
       verbose: true
     secrets: inherit
@@ -228,7 +247,6 @@ jobs:
       artifact_name: veracode-reservas
       policy_name: "Politica Restrictiva"
       output_file: reservas-results.txt
-      json_output: reservas-results.json
       fail_build: false
       verbose: true
     secrets: inherit
@@ -250,7 +268,6 @@ jobs:
       artifact_name: veracode-pagos
       policy_name: "Politica Restrictiva"
       output_file: pagos-results.txt
-      json_output: pagos-results.json
       fail_build: false
       verbose: true
     secrets: inherit
@@ -304,4 +321,4 @@ jobs:
     uses: ./.github/workflows/veracode-sca-scan.yml
     with:
       path: src/Modules/Pagos/VeracodeDemo.Pagos.Api
-    secrets: inherit 
+    secrets: inherit
