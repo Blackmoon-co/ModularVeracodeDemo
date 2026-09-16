@@ -23,7 +23,6 @@ permissions:
 
 env:
   DOTNET_VERSION: "8.0.x"
-  BUILD_CONFIGURATION: Release
 
 jobs:
 
@@ -46,7 +45,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Detectar módulos modificados
+      - name: Detectar cambios
         id: changes
         shell: bash
         env:
@@ -56,75 +55,78 @@ jobs:
 
           echo "Analizando cambios..."
 
-          if [[ "${FORCE_ALL:-false}" == "true" ]]; then
-            echo "Se solicitó escaneo completo."
-            echo "clientes=true" >> "$GITHUB_OUTPUT"
-            echo "reservas=true" >> "$GITHUB_OUTPUT"
-            echo "pagos=true" >> "$GITHUB_OUTPUT"
-            echo "all_modules=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            BASE_SHA="${{ github.event.pull_request.base.sha }}"
-            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
-          else
-            BASE_SHA="${{ github.event.before }}"
-            HEAD_SHA="${{ github.sha }}"
-
-            # En caso de push inicial o SHA inválido, revisar todo.
-            if [[ -z "$BASE_SHA" || "$BASE_SHA" == "0000000000000000000000000000000000000000" ]]; then
-              BASE_SHA="$(git rev-list --max-parents=0 HEAD)"
-            fi
-          fi
-
-          echo "BASE_SHA: $BASE_SHA"
-          echo "HEAD_SHA: $HEAD_SHA"
-
-          CHANGED_FILES="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" || true)"
-
-          echo "Archivos modificados:"
-          echo "$CHANGED_FILES"
-
           clientes=false
           reservas=false
           pagos=false
           all_modules=false
 
-          while IFS= read -r file; do
-            [[ -z "$file" ]] && continue
+          # Ejecución manual con escaneo completo
+          if [[ "${FORCE_ALL:-false}" == "true" ]]; then
+            echo "Escaneo completo solicitado manualmente."
 
-            case "$file" in
-              src/Modules/Clientes/*)
-                clientes=true
-                ;;
-
-              src/Modules/Reservas/*)
-                reservas=true
-                ;;
-
-              src/Modules/Pagos/*)
-                pagos=true
-                ;;
-
-              src/Shared/*|\
-              *.sln|\
-              *.props|\
-              *.targets|\
-              global.json|\
-              NuGet.config|\
-              Directory.Build.*|\
-              .github/*|\
-              scripts/*)
-                all_modules=true
-                ;;
-            esac
-          done <<< "$CHANGED_FILES"
-
-          if [[ "$all_modules" == "true" ]]; then
             clientes=true
             reservas=true
             pagos=true
+            all_modules=true
+          else
+            if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+              BASE_SHA="${{ github.event.pull_request.base.sha }}"
+              HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+            else
+              BASE_SHA="${{ github.event.before }}"
+              HEAD_SHA="${{ github.sha }}"
+
+              # Push inicial o SHA inválido
+              if [[ -z "$BASE_SHA" || "$BASE_SHA" == "0000000000000000000000000000000000000000" ]]; then
+                BASE_SHA="$(git rev-list --max-parents=0 HEAD)"
+              fi
+            fi
+
+            echo "BASE_SHA: $BASE_SHA"
+            echo "HEAD_SHA: $HEAD_SHA"
+
+            CHANGED_FILES="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" || true)"
+
+            echo ""
+            echo "Archivos modificados:"
+            echo "$CHANGED_FILES"
+
+            while IFS= read -r file; do
+              [[ -z "$file" ]] && continue
+
+              case "$file" in
+                src/Modules/Clientes/*)
+                  clientes=true
+                  ;;
+
+                src/Modules/Reservas/*)
+                  reservas=true
+                  ;;
+
+                src/Modules/Pagos/*)
+                  pagos=true
+                  ;;
+
+                src/Shared/*|\
+                *.sln|\
+                *.props|\
+                *.targets|\
+                global.json|\
+                NuGet.config|\
+                Directory.Build.*|\
+                .github/*|\
+                scripts/*)
+                  all_modules=true
+                  ;;
+              esac
+            done <<< "$CHANGED_FILES"
+
+            # Los cambios transversales afectan todos los módulos
+            if [[ "$all_modules" == "true" ]]; then
+              clientes=true
+              reservas=true
+              pagos=true
+            fi
           fi
 
           echo "clientes=$clientes" >> "$GITHUB_OUTPUT"
@@ -140,39 +142,12 @@ jobs:
           echo "Todos los módulos: $all_modules"
 
   # ============================================================
-  # Build de la solución
-  # ============================================================
-  build:
-    name: Build solución
-    needs: detect-changes
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Configurar .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
-
-      - name: Restaurar dependencias
-        run: dotnet restore
-
-      - name: Compilar solución
-        run: |
-          dotnet build \
-            --configuration "${{ env.BUILD_CONFIGURATION }}" \
-            --no-restore
-
-  # ============================================================
-  # Empaquetar Clientes
+  # AutoPackage - Clientes
   # ============================================================
   package-clientes:
-    name: Empaquetar Clientes
+    name: AutoPackage Clientes
     needs:
       - detect-changes
-      - build
     if: needs.detect-changes.outputs.clientes == 'true'
     uses: ./.github/workflows/veracode-autopackage.yml
     with:
@@ -183,13 +158,12 @@ jobs:
     secrets: inherit
 
   # ============================================================
-  # Empaquetar Reservas
+  # AutoPackage - Reservas
   # ============================================================
   package-reservas:
-    name: Empaquetar Reservas
+    name: AutoPackage Reservas
     needs:
       - detect-changes
-      - build
     if: needs.detect-changes.outputs.reservas == 'true'
     uses: ./.github/workflows/veracode-autopackage.yml
     with:
@@ -200,13 +174,12 @@ jobs:
     secrets: inherit
 
   # ============================================================
-  # Empaquetar Pagos
+  # AutoPackage - Pagos
   # ============================================================
   package-pagos:
-    name: Empaquetar Pagos
+    name: AutoPackage Pagos
     needs:
       - detect-changes
-      - build
     if: needs.detect-changes.outputs.pagos == 'true'
     uses: ./.github/workflows/veracode-autopackage.yml
     with:
@@ -331,4 +304,4 @@ jobs:
     uses: ./.github/workflows/veracode-sca-scan.yml
     with:
       path: src/Modules/Pagos/VeracodeDemo.Pagos.Api
-    secrets: inherit
+    secrets: inherit 
