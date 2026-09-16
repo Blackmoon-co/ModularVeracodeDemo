@@ -3,7 +3,7 @@ name: Veracode Modular Scan
 on:
   push:
     branches:
-      - 'feature/**'
+      - 'main'
 
 permissions:
   contents: read
