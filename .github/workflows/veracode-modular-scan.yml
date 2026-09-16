@@ -175,7 +175,9 @@ jobs:
       source_path: src/Modules/Clientes/VeracodeDemo.Clientes.Api
       output_name: clientes
       dotnet_version: "8.0.x"
-    secrets: inherit
+    secrets:
+      VERACODE_API_ID: ${{ secrets.VERACODE_API_ID_REPO }}
+      VERACODE_API_KEY_SECRET: ${{ secrets.VERACODE_API_KEY_SECRET_REPO }}
 
   # ============================================================
   # AutoPackage - Reservas
@@ -191,7 +193,9 @@ jobs:
       source_path: src/Modules/Reservas/VeracodeDemo.Reservas.Api
       output_name: reservas
       dotnet_version: "8.0.x"
-    secrets: inherit
+    secrets:
+      VERACODE_API_ID: ${{ secrets.VERACODE_API_ID_REPO }}
+      VERACODE_API_KEY_SECRET: ${{ secrets.VERACODE_API_KEY_SECRET_REPO }}
 
   # ============================================================
   # AutoPackage - Pagos
@@ -207,7 +211,9 @@ jobs:
       source_path: src/Modules/Pagos/VeracodeDemo.Pagos.Api
       output_name: pagos
       dotnet_version: "8.0.x"
-    secrets: inherit
+    secrets:
+      VERACODE_API_ID: ${{ secrets.VERACODE_API_ID_REPO }}
+      VERACODE_API_KEY_SECRET: ${{ secrets.VERACODE_API_KEY_SECRET_REPO }}
 
   # ============================================================
   # Pipeline Scan - Clientes
