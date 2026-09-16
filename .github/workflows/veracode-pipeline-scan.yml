@@ -1,4 +1,51 @@
-name: Veracode pipeline scan
+name: Veracode Pipeline Scan
+
+on:
+  workflow_call:
+    inputs:
+      policy_name:
+        description: "Nombre de la política de Veracode"
+        required: true
+        type: string
+
+      json_output:
+        description: "Generar resultados en formato JSON"
+        required: false
+        type: boolean
+        default: true
+
+      output_file:
+        description: "Nombre del archivo de resultados"
+        required: false
+        type: string
+        default: veracode-results.json
+
+      fail_build:
+        description: "Fallar el workflow si se encuentran vulnerabilidades"
+        required: false
+        type: boolean
+        default: false
+
+      verbose:
+        description: "Mostrar salida detallada"
+        required: false
+        type: boolean
+        default: true
+
+      artifact_name:
+        description: "Nombre del artefacto que contiene el paquete de Veracode"
+        required: false
+        type: string
+        default: veracode-artifact
+
+    secrets:
+      VERACODE_API_ID_REPO:
+        description: "Veracode API ID"
+        required: true
+
+      VERACODE_API_KEY_SECRET_REPO:
+        description: "Veracode API Key Secret"
+        required: true
 
 permissions:
   contents: read
@@ -6,58 +53,38 @@ permissions:
   actions: read
   issues: write
 
-on:
-  workflow_call:
-    inputs:
-      policy_name:
-        required: true
-        type: string
-      json_output:
-        required: false
-        type: boolean
-        default: true
-      output_file:
-        required: false
-        type: string
-        default: veracode-results.json
-      fail_build:
-        required: false
-        type: boolean
-        default: false
-      verbose:
-        required: false
-        type: boolean
-        default: true
-      artifact_name:
-        description: Nombre del artefacto que contiene el paquete de Veracode
-        required: false
-        type: string
-        default: veracode-artifact
-        
 jobs:
   pipeline-scan:
+    name: Pipeline Scan
     runs-on: ubuntu-latest
-    steps:
 
-      - name: Downloading artifact
+    steps:
+      - name: Download artifact
         uses: actions/download-artifact@v4
         with:
           name: ${{ inputs.artifact_name }}
 
       - name: Detect artifact for Veracode
         id: detect
+        shell: bash
         run: |
-          artifact=$(find . -type f \( -name "*.zip" -o -name "*.war" -o -name "*.jar" -o -name "*.ear" \) | head -n 1)
+          set -euo pipefail
 
-          if [ -z "$artifact" ]; then
-            echo "::error::No valid artifact found"
+          artifact="$(
+            find . -type f \
+              \( -name "*.zip" -o -name "*.war" -o -name "*.jar" -o -name "*.ear" \) \
+              | head -n 1
+          )"
+
+          if [[ -z "$artifact" ]]; then
+            echo "::error::No valid Veracode artifact found"
             exit 1
           fi
 
           echo "Artifact detected: $artifact"
-          echo "artifact_path=$artifact" >> $GITHUB_OUTPUT
+          echo "artifact_path=$artifact" >> "$GITHUB_OUTPUT"
 
-      - name: Pipeline-Scan veracode
+      - name: Run Veracode Pipeline Scan
         uses: veracode/Veracode-pipeline-scan-action@v1.0.18
         with:
           vid: ${{ secrets.VERACODE_API_ID_REPO }}
@@ -68,11 +95,11 @@ jobs:
           json_output_file: ${{ inputs.output_file }}
           veracode_policy_name: ${{ inputs.policy_name }}
           fail_build: ${{ inputs.fail_build }}
-         
+
       - name: Upload Veracode results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: veracode-pipeline-scan-results
+          name: veracode-pipeline-scan-results-${{ inputs.artifact_name }}
           path: ${{ inputs.output_file }}
           if-no-files-found: warn

@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       force_all:
-        description: "Forzar escaneo de todos los módulos"
+        description: "Escanear todos los módulos"
         required: false
         default: false
         type: boolean
@@ -27,304 +27,349 @@ env:
   DOTNET_VERSION: "8.0.x"
 
 jobs:
-
   # ============================================================
-  # Detectar módulos modificados
+  # 1. Detectar módulos modificados
   # ============================================================
   detect-changes:
     name: Detectar cambios
     runs-on: ubuntu-latest
 
     outputs:
-      clientes: ${{ steps.changes.outputs.clientes }}
-      reservas: ${{ steps.changes.outputs.reservas }}
-      pagos: ${{ steps.changes.outputs.pagos }}
-      all_modules: ${{ steps.changes.outputs.all_modules }}
+      clientes: ${{ steps.detect.outputs.clientes }}
+      reservas: ${{ steps.detect.outputs.reservas }}
+      pagos: ${{ steps.detect.outputs.pagos }}
+      all_modules: ${{ steps.detect.outputs.all_modules }}
 
     steps:
-      - name: Checkout
+      - name: Checkout completo
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Detectar cambios
-        id: changes
+      - name: Detectar módulos modificados
+        id: detect
         shell: bash
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_BEFORE: ${{ github.event.before }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           FORCE_ALL: ${{ inputs.force_all }}
         run: |
           set -euo pipefail
 
-          echo "Analizando cambios..."
+          CLIENTES="false"
+          RESERVAS="false"
+          PAGOS="false"
+          ALL_MODULES="false"
 
-          clientes=false
-          reservas=false
-          pagos=false
-          all_modules=false
+          echo "Evento: ${EVENT_NAME}"
+          echo "Force all: ${FORCE_ALL:-false}"
 
-          # ======================================================
-          # Escaneo completo solicitado manualmente
-          # ======================================================
-          if [[ "${FORCE_ALL:-false}" == "true" ]]; then
-            echo "Escaneo completo solicitado manualmente."
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            BASE_SHA="${PR_BASE_SHA}"
+            HEAD_SHA="${PR_HEAD_SHA}"
 
-            clientes=true
-            reservas=true
-            pagos=true
-            all_modules=true
+          elif [[ "${EVENT_NAME}" == "push" ]]; then
+            BASE_SHA="${EVENT_BEFORE}"
+            HEAD_SHA="${GITHUB_SHA}"
 
           else
-            # ====================================================
-            # Determinar commits base y actual
-            # ====================================================
-            if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-              BASE_SHA="${{ github.event.pull_request.base.sha }}"
-              HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+            BASE_SHA=""
+            HEAD_SHA="${GITHUB_SHA}"
+          fi
+
+          if [[ "${FORCE_ALL:-false}" == "true" ]]; then
+            echo "Ejecución manual: se escanearán todos los módulos."
+            ALL_MODULES="true"
+          else
+            if [[ -n "${BASE_SHA}" ]] &&
+               [[ "${BASE_SHA}" != "0000000000000000000000000000000000000000" ]]; then
+
+              CHANGED_FILES=$(git diff --name-only "${BASE_SHA}" "${HEAD_SHA}")
+
             else
-              BASE_SHA="${{ github.event.before }}"
-              HEAD_SHA="${{ github.sha }}"
-
-              # En caso de push inicial o SHA inválido
-              if [[ -z "$BASE_SHA" || "$BASE_SHA" == "0000000000000000000000000000000000000000" ]]; then
-                BASE_SHA="$(git rev-list --max-parents=0 HEAD)"
-              fi
+              CHANGED_FILES=$(git show \
+                --pretty="" \
+                --name-only \
+                "${HEAD_SHA}")
             fi
-
-            echo "BASE_SHA: $BASE_SHA"
-            echo "HEAD_SHA: $HEAD_SHA"
-
-            CHANGED_FILES="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" || true)"
 
             echo ""
             echo "Archivos modificados:"
-            echo "$CHANGED_FILES"
+            echo "--------------------"
+            echo "${CHANGED_FILES}"
+            echo ""
 
-            # ====================================================
-            # Clasificar archivos modificados
-            # ====================================================
-            while IFS= read -r file; do
-              [[ -z "$file" ]] && continue
+            while IFS= read -r FILE; do
+              [[ -z "${FILE}" ]] && continue
 
-              case "$file" in
-
+              case "${FILE}" in
                 src/Modules/Clientes/*)
-                  clientes=true
+                  CLIENTES="true"
                   ;;
 
                 src/Modules/Reservas/*)
-                  reservas=true
+                  RESERVAS="true"
                   ;;
 
                 src/Modules/Pagos/*)
-                  pagos=true
+                  PAGOS="true"
                   ;;
 
-                src/Shared/*|\
-                *.sln|\
-                *.props|\
-                *.targets|\
-                global.json|\
-                NuGet.config|\
-                Directory.Build.*|\
-                .github/*|\
+                src/Shared/*)
+                  ALL_MODULES="true"
+                  ;;
+
+                *.sln)
+                  ALL_MODULES="true"
+                  ;;
+
+                *.props)
+                  ALL_MODULES="true"
+                  ;;
+
+                *.targets)
+                  ALL_MODULES="true"
+                  ;;
+
+                global.json)
+                  ALL_MODULES="true"
+                  ;;
+
+                NuGet.config)
+                  ALL_MODULES="true"
+                  ;;
+
+                Directory.Build.*)
+                  ALL_MODULES="true"
+                  ;;
+
+                .github/*)
+                  ALL_MODULES="true"
+                  ;;
+
                 scripts/*)
-                  all_modules=true
+                  ALL_MODULES="true"
                   ;;
 
-              esac
-            done <<< "$CHANGED_FILES"
+                Dockerfile)
+                  ALL_MODULES="true"
+                  ;;
 
-            # ====================================================
-            # Cambios transversales: escanear todos los módulos
-            # ====================================================
-            if [[ "$all_modules" == "true" ]]; then
-              clientes=true
-              reservas=true
-              pagos=true
-            fi
+                docker-compose*.yml)
+                  ALL_MODULES="true"
+                  ;;
+              esac
+            done <<< "${CHANGED_FILES}"
           fi
 
-          # ======================================================
-          # Publicar outputs
-          # ======================================================
-          echo "clientes=$clientes" >> "$GITHUB_OUTPUT"
-          echo "reservas=$reservas" >> "$GITHUB_OUTPUT"
-          echo "pagos=$pagos" >> "$GITHUB_OUTPUT"
-          echo "all_modules=$all_modules" >> "$GITHUB_OUTPUT"
+          if [[ "${ALL_MODULES}" == "true" ]]; then
+            CLIENTES="true"
+            RESERVAS="true"
+            PAGOS="true"
+          fi
+
+          echo "clientes=${CLIENTES}" >> "${GITHUB_OUTPUT}"
+          echo "reservas=${RESERVAS}" >> "${GITHUB_OUTPUT}"
+          echo "pagos=${PAGOS}" >> "${GITHUB_OUTPUT}"
+          echo "all_modules=${ALL_MODULES}" >> "${GITHUB_OUTPUT}"
 
           echo ""
-          echo "========================================"
-          echo "Resultado de detección"
-          echo "========================================"
-          echo "Clientes: $clientes"
-          echo "Reservas: $reservas"
-          echo "Pagos: $pagos"
-          echo "Todos los módulos: $all_modules"
+          echo "Resultado:"
+          echo "Clientes: ${CLIENTES}"
+          echo "Reservas: ${RESERVAS}"
+          echo "Pagos: ${PAGOS}"
+          echo "Todos: ${ALL_MODULES}"
 
   # ============================================================
-  # AutoPackage - Clientes
+  # 2. AutoPackage - Clientes
   # ============================================================
   package-clientes:
     name: AutoPackage Clientes
     needs:
       - detect-changes
+
     if: needs.detect-changes.outputs.clientes == 'true'
+
     uses: ./.github/workflows/veracode-autopackage.yml
+
     with:
       module_name: Clientes
       source_path: src/Modules/Clientes/VeracodeDemo.Clientes.Api
       output_name: clientes
       dotnet_version: "8.0.x"
-    secrets:
-      VERACODE_API_ID: ${{ secrets.VERACODE_API_ID_REPO }}
-      VERACODE_API_KEY_SECRET: ${{ secrets.VERACODE_API_KEY_SECRET_REPO }}
 
   # ============================================================
-  # AutoPackage - Reservas
+  # 3. AutoPackage - Reservas
   # ============================================================
   package-reservas:
     name: AutoPackage Reservas
     needs:
       - detect-changes
+
     if: needs.detect-changes.outputs.reservas == 'true'
+
     uses: ./.github/workflows/veracode-autopackage.yml
+
     with:
       module_name: Reservas
       source_path: src/Modules/Reservas/VeracodeDemo.Reservas.Api
       output_name: reservas
       dotnet_version: "8.0.x"
-    secrets:
-      VERACODE_API_ID: ${{ secrets.VERACODE_API_ID_REPO }}
-      VERACODE_API_KEY_SECRET: ${{ secrets.VERACODE_API_KEY_SECRET_REPO }}
 
   # ============================================================
-  # AutoPackage - Pagos
+  # 4. AutoPackage - Pagos
   # ============================================================
   package-pagos:
     name: AutoPackage Pagos
     needs:
       - detect-changes
+
     if: needs.detect-changes.outputs.pagos == 'true'
+
     uses: ./.github/workflows/veracode-autopackage.yml
+
     with:
       module_name: Pagos
       source_path: src/Modules/Pagos/VeracodeDemo.Pagos.Api
       output_name: pagos
       dotnet_version: "8.0.x"
-    secrets:
-      VERACODE_API_ID: ${{ secrets.VERACODE_API_ID_REPO }}
-      VERACODE_API_KEY_SECRET: ${{ secrets.VERACODE_API_KEY_SECRET_REPO }}
 
   # ============================================================
-  # Pipeline Scan - Clientes
+  # 5. Pipeline Scan - Clientes
   # ============================================================
   scan-clientes:
     name: Pipeline Scan Clientes
     needs:
       - detect-changes
       - package-clientes
+
     if: |
       always() &&
       needs.detect-changes.outputs.clientes == 'true' &&
       needs.package-clientes.result == 'success'
+
     uses: ./.github/workflows/veracode-pipeline-scan.yml
+
     with:
       artifact_name: veracode-clientes
       policy_name: "Politica Restrictiva"
-      output_file: clientes-results.txt
+      json_output: true
+      output_file: clientes-results.json
       fail_build: false
       verbose: true
-    secrets: inherit
+
+    secrets:
+      VERACODE_API_ID_REPO: ${{ secrets.VERACODE_API_ID_REPO }}
+      VERACODE_API_KEY_SECRET_REPO: ${{ secrets.VERACODE_API_KEY_SECRET_REPO }}
 
   # ============================================================
-  # Pipeline Scan - Reservas
+  # 6. Pipeline Scan - Reservas
   # ============================================================
   scan-reservas:
     name: Pipeline Scan Reservas
     needs:
       - detect-changes
       - package-reservas
+
     if: |
       always() &&
       needs.detect-changes.outputs.reservas == 'true' &&
       needs.package-reservas.result == 'success'
+
     uses: ./.github/workflows/veracode-pipeline-scan.yml
+
     with:
       artifact_name: veracode-reservas
       policy_name: "Politica Restrictiva"
-      output_file: reservas-results.txt
+      json_output: true
+      output_file: reservas-results.json
       fail_build: false
       verbose: true
-    secrets: inherit
+
+    secrets:
+      VERACODE_API_ID_REPO: ${{ secrets.VERACODE_API_ID_REPO }}
+      VERACODE_API_KEY_SECRET_REPO: ${{ secrets.VERACODE_API_KEY_SECRET_REPO }}
 
   # ============================================================
-  # Pipeline Scan - Pagos
+  # 7. Pipeline Scan - Pagos
   # ============================================================
   scan-pagos:
     name: Pipeline Scan Pagos
     needs:
       - detect-changes
       - package-pagos
+
     if: |
       always() &&
       needs.detect-changes.outputs.pagos == 'true' &&
       needs.package-pagos.result == 'success'
+
     uses: ./.github/workflows/veracode-pipeline-scan.yml
+
     with:
       artifact_name: veracode-pagos
       policy_name: "Politica Restrictiva"
-      output_file: pagos-results.txt
+      json_output: true
+      output_file: pagos-results.json
       fail_build: false
       verbose: true
-    secrets: inherit
+
+    secrets:
+      VERACODE_API_ID_REPO: ${{ secrets.VERACODE_API_ID_REPO }}
+      VERACODE_API_KEY_SECRET_REPO: ${{ secrets.VERACODE_API_KEY_SECRET_REPO }}
 
   # ============================================================
-  # SCA - Clientes
+  # 8. SCA - Clientes
   # ============================================================
   sca-clientes:
     name: SCA Clientes
     needs:
       - detect-changes
-      - package-clientes
-    if: |
-      always() &&
-      needs.detect-changes.outputs.clientes == 'true' &&
-      needs.package-clientes.result == 'success'
+
+    if: needs.detect-changes.outputs.clientes == 'true'
+
     uses: ./.github/workflows/veracode-sca-scan.yml
+
     with:
       path: src/Modules/Clientes/VeracodeDemo.Clientes.Api
-    secrets: inherit
+
+    secrets:
+      VERACODE_AGENT_TOKEN: ${{ secrets.VERACODE_AGENT_TOKEN }}
 
   # ============================================================
-  # SCA - Reservas
+  # 9. SCA - Reservas
   # ============================================================
   sca-reservas:
     name: SCA Reservas
     needs:
       - detect-changes
-      - package-reservas
-    if: |
-      always() &&
-      needs.detect-changes.outputs.reservas == 'true' &&
-      needs.package-reservas.result == 'success'
+
+    if: needs.detect-changes.outputs.reservas == 'true'
+
     uses: ./.github/workflows/veracode-sca-scan.yml
+
     with:
       path: src/Modules/Reservas/VeracodeDemo.Reservas.Api
-    secrets: inherit
+
+    secrets:
+      VERACODE_AGENT_TOKEN: ${{ secrets.VERACODE_AGENT_TOKEN }}
 
   # ============================================================
-  # SCA - Pagos
+  # 10. SCA - Pagos
   # ============================================================
   sca-pagos:
     name: SCA Pagos
     needs:
       - detect-changes
-      - package-pagos
-    if: |
-      always() &&
-      needs.detect-changes.outputs.pagos == 'true' &&
-      needs.package-pagos.result == 'success'
+
+    if: needs.detect-changes.outputs.pagos == 'true'
+
     uses: ./.github/workflows/veracode-sca-scan.yml
+
     with:
       path: src/Modules/Pagos/VeracodeDemo.Pagos.Api
-    secrets: inherit
+
+    secrets:
+      VERACODE_AGENT_TOKEN: ${{ secrets.VERACODE_AGENT_TOKEN }}
