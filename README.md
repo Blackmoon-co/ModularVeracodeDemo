@@ -1,8 +1,64 @@
 # Veracode Modular .NET Demo
 
-PoC de una solucion .NET modular para explicar escaneo por unidades funcionales con Veracode.
+PoC de una solucion .NET modular para explicar escaneo por unidades funcionales con Veracode: cada modulo se empaqueta y escanea por separado en CI, en vez de un escaneo monolitico de todo el repo.
 
-## Estructura
+## Pipelines (GitHub Actions)
+
+Hay 4 workflows en `.github/workflows/`. Uno es el orquestador que dispara todo en cada push a `main`; los otros tres son reusables (`workflow_call`) e invocados desde el orquestador o entre si.
+
+### 1. `veracode-modular-scan.yml` — orquestador
+
+Se dispara en `push` a `main`. Flujo:
+
+1. **`detect-changes`**: hace diff entre el commit anterior y el actual y decide, por modulo, si hubo cambios (`clientes`, `reservas`, `pagos`). Si cambia algo compartido (`src/Shared/*`, `*.sln`, `scripts/*`, `Directory.Build.*`, `global.json`, `NuGet.config`, `Dockerfile`, etc.) marca `all_modules=true` y fuerza los tres.
+2. **`package-clientes` / `package-reservas` / `package-pagos`**: si el modulo cambio, llaman a `veracode-autopackage.yml` para ese modulo (paralelo entre modulos).
+3. **`scan-clientes` / `scan-reservas` / `scan-pagos`**: si el empaquetado del modulo tuvo exito, llaman a `veracode-pipeline-scan.yml` con `policy_name: "Politica Restrictiva"` y `fail_build: false`.
+
+Es decir: **solo se empaqueta y escanea el modulo que cambio**, no los tres. Cada modulo tiene su propio par de jobs (`package-<modulo>` + `scan-<modulo>`) y ese par solo se ejecuta si `detect-changes` marco ese modulo en `true`. Los `if:` de cada job son independientes entre si, por eso en un push que solo toca `Pagos` los jobs de `clientes` y `reservas` ni siquiera arrancan (quedan "Skipped" en el run de Actions), y el tiempo de CI y el costo de escaneo se reducen a lo que realmente cambio.
+
+Ejemplos de que dispara un push a `main`:
+
+| Archivos modificados | `clientes` | `reservas` | `pagos` | Jobs que corren |
+|---|---|---|---|---|
+| `src/Modules/Pagos/VeracodeDemo.Pagos.Api/Program.cs` | false | false | true | `package-pagos` → `scan-pagos` |
+| `src/Modules/Clientes/.../ClienteController.cs` | true | false | false | `package-clientes` → `scan-clientes` |
+| `src/Modules/Reservas/...` + `src/Modules/Pagos/...` en el mismo push | false | true | true | `package-reservas` → `scan-reservas`, `package-pagos` → `scan-pagos` |
+| `src/Shared/VeracodeDemo.Shared/...` (o `.sln`, `scripts/*`, `global.json`, etc.) | true | true | true | los 6 jobs (`package-*` → `scan-*` de los tres modulos) |
+| Solo `README.md` u otro archivo fuera de `src/` y `scripts/` | false | false | false | ninguno — `detect-changes` corre pero ningun `package-*`/`scan-*` se dispara |
+
+La logica vive en el paso `Detectar modulos modificados` de `detect-changes` (`veracode-modular-scan.yml:37-154`): compara `git diff` entre el commit anterior y el actual, y por cada archivo cambiado hace un `case` sobre la ruta para prender el flag del modulo correspondiente (o `all_modules` si es algo compartido, lo que a su vez prende los tres).
+
+### 2. `veracode-autopackage.yml` — empaquetado (reusable)
+
+Recibe `module_name`, `source_path`, `output_name`, `dotnet_version`. Instala la Veracode CLI, valida que exista `source_path`, corre `veracode package --source <path> --type directory --trust`, copia el ZIP resultante a `artifacts/veracode/final/<output_name>.zip` y lo sube como artifact `veracode-<output_name>`.
+
+### 3. `veracode-pipeline-scan.yml` — Pipeline Scan (reusable)
+
+Descarga el artifact generado en el paso anterior, ubica el `.zip`/`.war`/`.jar`/`.ear` y ejecuta `veracode/Veracode-pipeline-scan-action@v1.0.18` contra la politica indicada. Sube los resultados (JSON) como artifact `veracode-pipeline-scan-results-<artifact_name>`.
+
+Requiere estos secrets del repo:
+
+```text
+VERACODE_API_ID_REPO
+VERACODE_API_KEY_SECRET_REPO
+```
+
+### 4. `veracode-sca-scan.yml` — SCA (reusable, no conectado)
+
+Corre `veracode/veracode-sca@v2.1.10` (analisis de dependencias open source) sobre una `path` dada, usando el secret `VERACODE_AGENT_TOKEN`. Existe en el repo pero **ningun workflow lo invoca todavia** — queda listo para engancharlo al orquestador cuando se quiera sumar SCA por modulo.
+
+### Diagrama del flujo
+
+```text
+push a main
+  -> detect-changes (que modulos cambiaron)
+       -> package-<modulo> (veracode-autopackage.yml)
+            -> scan-<modulo> (veracode-pipeline-scan.yml)
+
+veracode-sca-scan.yml  (reusable suelto, sin caller todavia)
+```
+
+## Estructura del repo
 
 ```text
 ModularVeracodeDemo/
@@ -15,10 +71,16 @@ ModularVeracodeDemo/
   scripts/
     package-module.ps1
     package-all.ps1
-  .github/workflows/veracode-modular-scan.yml
+  .github/workflows/
+    veracode-modular-scan.yml      # orquestador (push a main)
+    veracode-autopackage.yml       # reusable: empaquetado por modulo
+    veracode-pipeline-scan.yml     # reusable: Pipeline Scan por modulo
+    veracode-sca-scan.yml          # reusable: SCA (sin conectar)
   veracode.yml
   veracode.discover.example.yml
 ```
+
+`artifacts/` (publish + zips) y `veracode-auto-pack-*.zip` son salida local/CI y estan en `.gitignore`, no se versionan.
 
 ## Dependencias entre proyectos
 
@@ -27,11 +89,11 @@ ModularVeracodeDemo/
 - `VeracodeDemo.Reservas.Api`: API funcional de reservas, depende de `Shared`.
 - `VeracodeDemo.Pagos.Api`: API funcional de pagos, depende de `Shared`.
 
-Cada modulo es una API ASP.NET Core independiente. Esto permite publicar y empaquetar cada unidad funcional por separado.
+Cada modulo es una API ASP.NET Core (.NET 8) independiente, lo que permite publicar y empaquetar cada unidad funcional por separado — la base de por que el escaneo modular tiene sentido.
 
-## Comandos base
+## Comandos locales
 
-Crear/restaurar/compilar:
+Restaurar/compilar:
 
 ```powershell
 dotnet restore .\ModularVeracodeDemo.sln
@@ -44,7 +106,7 @@ Publicar un modulo:
 dotnet publish .\src\Modules\Clientes\VeracodeDemo.Clientes.Api\VeracodeDemo.Clientes.Api.csproj -c Release -o .\artifacts\publish\clientes
 ```
 
-Generar los ZIP modulares para Veracode:
+Generar los ZIP modulares para Veracode (publish + compress, equivalente a lo que hace CI con la Veracode CLI):
 
 ```powershell
 .\scripts\package-module.ps1 -Module clientes
@@ -58,64 +120,19 @@ O todos a la vez:
 .\scripts\package-all.ps1
 ```
 
-Los artefactos quedan en:
+Los artefactos quedan en `artifacts/veracode/<modulo>.zip` (no versionado).
 
-```text
-artifacts/veracode/clientes.zip
-artifacts/veracode/reservas.zip
-artifacts/veracode/pagos.zip
-```
+## Veracode package discover / AutoPackager (CLI local)
 
-## Veracode package discover / AutoPackager
-
-La documentacion oficial de Veracode indica que `veracode package discover` detecta toolchains, identifica modulos soportados y genera o actualiza `veracode.yml`. Para .NET, soporta proyectos MSBuild con `.csproj` o `.publishproj`.
-
-Pre-chequeo recomendado para esta estructura:
+La documentacion oficial de Veracode indica que `veracode package discover` detecta toolchains, identifica modulos soportados y genera o actualiza `veracode.yml`. Para .NET soporta proyectos MSBuild con `.csproj` o `.publishproj`. En este repo `veracode.yml` ya esta generado en la raiz con las rutas de los tres modulos (ver arriba); si cambia la estructura conviene regenerarlo:
 
 ```bash
-veracode package discover src --dry-run --format yaml
+veracode package discover src --dry-run --format yaml   # pre-chequeo
+veracode package discover src                            # genera veracode.yml
+veracode package --source . --trust                      # AutoPackager, genera un zip por modulo
 ```
 
-Generacion real de `veracode.yml` desde la CLI:
-
-```bash
-veracode package discover src
-```
-
-En esta PoC se deja `veracode.yml` en la raiz con las rutas limpias de los tres modulos. Si el cliente cambia la estructura del repo, conviene regenerarlo con `package discover` y revisar el diff.
-
-Empaquetado con AutoPackager, despues de validar el contenido generado por discovery:
-
-```bash
-veracode package --source . --trust
-```
-
-Validado localmente con Veracode CLI v2.52.0: el comando creo tres artefactos modulares:
-
-```text
-veracode-auto-pack-VeracodeDemo.Clientes.Api-dotnet.zip
-veracode-auto-pack-VeracodeDemo.Reservas.Api-dotnet.zip
-veracode-auto-pack-VeracodeDemo.Pagos.Api-dotnet.zip
-```
-
-Importante: el archivo `veracode.discover.example.yml` incluido aqui es solamente una guia para conversar con el cliente. La salida autoritativa debe producirla la CLI de Veracode en el entorno real.
-
-## Escaneo modular en GitHub Actions
-
-El workflow `.github/workflows/veracode-modular-scan.yml` usa una matriz con tres modulos:
-
-- `clientes`
-- `reservas`
-- `pagos`
-
-Cada job publica y empaqueta su modulo de forma independiente. El bloque de Pipeline Scan queda como placeholder para reemplazarlo por la accion oficial o el comando JAR aprobado por el cliente, usando estos secretos:
-
-```text
-VERACODE_API_ID
-VERACODE_API_KEY
-```
-
-La parte importante de la PoC es que la matriz mantiene un escaneo por modulo, permitiendo ejecucion paralela y comparacion contra un escaneo monolitico.
+`veracode.discover.example.yml` es solo una guia de referencia para conversar con el cliente; la salida autoritativa la produce la CLI en el entorno real. Esto es lo mismo que hace `veracode-autopackage.yml` en CI, pero corrido en local.
 
 ## Fuentes oficiales consultadas
 
