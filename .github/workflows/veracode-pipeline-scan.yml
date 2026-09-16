@@ -60,8 +60,8 @@ jobs:
       - name: Pipeline-Scan veracode
         uses: veracode/Veracode-pipeline-scan-action@v1.0.18
         with:
-          vid: ${{ secrets.VERACODE_API_ID }}
-          vkey: ${{ secrets.VERACODE_API_KEY }}
+          vid: ${{ secrets.VERACODE_API_ID_REPO }}
+          vkey: ${{ secrets.VERACODE_API_KEY_SECRET_REPO }}
           file: ${{ steps.detect.outputs.artifact_path }}
           json_output: ${{ inputs.json_output }}
           verbose: ${{ inputs.verbose }}

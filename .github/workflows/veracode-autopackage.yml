@@ -24,6 +24,15 @@ on:
         type: string
         default: "8.0.x"
 
+    secrets:
+      VERACODE_API_ID:
+        description: "Veracode API ID"
+        required: true
+
+      VERACODE_API_KEY_SECRET:
+        description: "Veracode API Key"
+        required: true
+
     outputs:
       artifact_name:
         description: "Nombre del artefacto publicado"
@@ -41,14 +50,21 @@ jobs:
     name: AutoPackage - ${{ inputs.module_name }}
     runs-on: ubuntu-latest
 
-    outputs:
-      artifact_name: ${{ steps.package.outputs.artifact_name }}
-      package_path: ${{ steps.package.outputs.package_path }}
+    permissions:
+      contents: read
 
     env:
       DOTNET_VERSION: ${{ inputs.dotnet_version }}
       SOURCE_PATH: ${{ inputs.source_path }}
       OUTPUT_NAME: ${{ inputs.output_name }}
+
+      # Credenciales recibidas desde los secretos del repositorio
+      VERACODE_API_ID: ${{ secrets.VERACODE_API_ID }}
+      VERACODE_API_KEY_SECRET: ${{ secrets.VERACODE_API_KEY_SECRET }}
+
+    outputs:
+      artifact_name: ${{ steps.package.outputs.artifact_name }}
+      package_path: ${{ steps.package.outputs.package_path }}
 
     steps:
       - name: Checkout
@@ -59,10 +75,29 @@ jobs:
         with:
           dotnet-version: ${{ inputs.dotnet_version }}
 
+      - name: Validar credenciales de Veracode
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${VERACODE_API_ID:-}" ]; then
+            echo "ERROR: VERACODE_API_ID no fue recibido."
+            exit 1
+          fi
+
+          if [ -z "${VERACODE_API_KEY_SECRET:-}" ]; then
+            echo "ERROR: VERACODE_API_KEY_SECRET no fue recibido."
+            exit 1
+          fi
+
+          echo "Credenciales de Veracode recibidas correctamente."
+
       - name: Instalar Veracode CLI
         shell: bash
         run: |
           set -euo pipefail
+
+          echo "Instalando Veracode CLI..."
 
           curl -fsSL https://tools.veracode.com/veracode-cli/install | sh
 
@@ -89,7 +124,7 @@ jobs:
           fi
 
           if [ -z "$VERACODE_BIN" ]; then
-            echo "ERROR: No se encontró el ejecutable Veracode CLI."
+            echo "ERROR: No se encontró el ejecutable de Veracode CLI."
 
             echo "Archivos candidatos encontrados:"
             find "$GITHUB_WORKSPACE" "$HOME" \
@@ -100,14 +135,31 @@ jobs:
             exit 1
           fi
 
-          echo "Veracode CLI encontrado en: $VERACODE_BIN"
-
           chmod +x "$VERACODE_BIN"
+
+          echo "Veracode CLI encontrado en: $VERACODE_BIN"
 
           echo "VERACODE_BIN=$VERACODE_BIN" >> "$GITHUB_ENV"
 
           echo "Versión instalada:"
           "$VERACODE_BIN" version
+
+      - name: Validar ruta del módulo
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -d "$SOURCE_PATH" ]; then
+            echo "ERROR: La ruta del módulo no existe:"
+            echo "$SOURCE_PATH"
+            exit 1
+          fi
+
+          echo "Ruta del módulo validada:"
+          echo "$SOURCE_PATH"
+
+          echo "Contenido principal:"
+          find "$SOURCE_PATH" -maxdepth 2 -type f -print | head -n 100
 
       - name: Ejecutar AutoPackage
         id: package
@@ -116,12 +168,20 @@ jobs:
           set -euo pipefail
 
           OUTPUT_DIR="$GITHUB_WORKSPACE/artifacts/veracode/$OUTPUT_NAME"
+          FINAL_DIR="$GITHUB_WORKSPACE/artifacts/veracode/final"
+          FINAL_FILE="$FINAL_DIR/${OUTPUT_NAME}.zip"
 
           mkdir -p "$OUTPUT_DIR"
+          mkdir -p "$FINAL_DIR"
 
+          echo "========================================"
+          echo "Veracode AutoPackage"
+          echo "========================================"
           echo "Módulo: ${{ inputs.module_name }}"
           echo "Source: $SOURCE_PATH"
-          echo "Output: $OUTPUT_DIR"
+          echo "Output directory: $OUTPUT_DIR"
+          echo "Final file: $FINAL_FILE"
+          echo "========================================"
 
           "$VERACODE_BIN" package \
             --source "$SOURCE_PATH" \
@@ -130,8 +190,8 @@ jobs:
             --verbose \
             --output "$OUTPUT_DIR"
 
-          echo "Contenido generado:"
-          find "$OUTPUT_DIR" -maxdepth 3 -type f -print
+          echo "Contenido generado por AutoPackage:"
+          find "$OUTPUT_DIR" -maxdepth 4 -type f -print
 
           PACKAGE_FILE="$(
             find "$OUTPUT_DIR" \
@@ -145,22 +205,53 @@ jobs:
           )"
 
           if [ -z "$PACKAGE_FILE" ]; then
-            echo "ERROR: AutoPackage no generó un archivo ZIP/JAR/WAR."
+            echo "ERROR: AutoPackage no generó un archivo ZIP, JAR o WAR."
+
+            echo "Contenido completo del directorio de salida:"
+            find "$OUTPUT_DIR" -maxdepth 5 -print || true
+
             exit 1
           fi
 
-          FINAL_DIR="$GITHUB_WORKSPACE/artifacts/veracode/final"
-          FINAL_FILE="$FINAL_DIR/${OUTPUT_NAME}.zip"
-
-          mkdir -p "$FINAL_DIR"
+          echo "Paquete detectado:"
+          echo "$PACKAGE_FILE"
 
           cp "$PACKAGE_FILE" "$FINAL_FILE"
 
-          echo "Paquete final:"
+          if [ ! -f "$FINAL_FILE" ]; then
+            echo "ERROR: No se pudo crear el paquete final."
+            exit 1
+          fi
+
+          if [ ! -s "$FINAL_FILE" ]; then
+            echo "ERROR: El paquete final está vacío."
+            exit 1
+          fi
+
+          echo "========================================"
+          echo "Paquete final generado correctamente"
+          echo "========================================"
+
           ls -lh "$FINAL_FILE"
 
           echo "artifact_name=veracode-${OUTPUT_NAME}" >> "$GITHUB_OUTPUT"
           echo "package_path=$FINAL_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Validar paquete final
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FINAL_FILE="$GITHUB_WORKSPACE/artifacts/veracode/final/${OUTPUT_NAME}.zip"
+
+          if [ ! -f "$FINAL_FILE" ]; then
+            echo "ERROR: No existe el paquete final:"
+            echo "$FINAL_FILE"
+            exit 1
+          fi
+
+          echo "Paquete listo para publicar:"
+          ls -lh "$FINAL_FILE"
 
       - name: Publicar artefacto
         uses: actions/upload-artifact@v4
