@@ -80,13 +80,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -z "${VERACODE_API_ID:-}" ]; then
-            echo "ERROR: VERACODE_API_ID no fue recibido."
+          if [ -z "${VERACODE_API_ID_REPO:-}" ]; then
+            echo "ERROR: VERACODE_API_ID_REPO no fue recibido."
             exit 1
           fi
 
-          if [ -z "${VERACODE_API_KEY_SECRET:-}" ]; then
-            echo "ERROR: VERACODE_API_KEY_SECRET no fue recibido."
+          if [ -z "${VERACODE_API_KEY_SECRET_REPO:-}" ]; then
+            echo "ERROR: VERACODE_API_KEY_SECRET_REPO no fue recibido."
             exit 1
           fi
 
