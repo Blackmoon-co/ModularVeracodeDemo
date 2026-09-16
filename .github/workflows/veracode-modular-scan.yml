@@ -3,20 +3,7 @@ name: Veracode Modular Scan
 on:
   push:
     branches:
-      - main
       - 'feature/**'
-
-  pull_request:
-    branches:
-      - main
-
-  workflow_dispatch:
-    inputs:
-      force_all:
-        description: "Escanear todos los módulos"
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -51,11 +38,8 @@ jobs:
         id: detect
         shell: bash
         env:
-          EVENT_NAME: ${{ github.event_name }}
           EVENT_BEFORE: ${{ github.event.before }}
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          FORCE_ALL: ${{ inputs.force_all }}
+          HEAD_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
 
@@ -64,111 +48,91 @@ jobs:
           PAGOS="false"
           ALL_MODULES="false"
 
-          echo "Evento: ${EVENT_NAME}"
-          echo "Force all: ${FORCE_ALL:-false}"
+          BASE_SHA="${EVENT_BEFORE}"
+          CURRENT_SHA="${HEAD_SHA}"
 
-          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
-            BASE_SHA="${PR_BASE_SHA}"
-            HEAD_SHA="${PR_HEAD_SHA}"
+          echo "Rama: ${GITHUB_REF_NAME}"
+          echo "Commit anterior: ${BASE_SHA}"
+          echo "Commit actual: ${CURRENT_SHA}"
 
-          elif [[ "${EVENT_NAME}" == "push" ]]; then
-            BASE_SHA="${EVENT_BEFORE}"
-            HEAD_SHA="${GITHUB_SHA}"
+          if [[ -z "${BASE_SHA}" ]] ||
+             [[ "${BASE_SHA}" == "0000000000000000000000000000000000000000" ]]; then
 
+            CHANGED_FILES="$(
+              git show \
+                --pretty="" \
+                --name-only \
+                "${CURRENT_SHA}"
+            )"
           else
-            BASE_SHA=""
-            HEAD_SHA="${GITHUB_SHA}"
+            CHANGED_FILES="$(
+              git diff --name-only "${BASE_SHA}" "${CURRENT_SHA}"
+            )"
           fi
 
-          if [[ "${FORCE_ALL:-false}" == "true" ]]; then
-            echo "Ejecución manual: se escanearán todos los módulos."
-            ALL_MODULES="true"
+          echo ""
+          echo "Archivos modificados:"
+          echo "---------------------"
+          echo "${CHANGED_FILES}"
+          echo ""
 
-          else
-            if [[ -n "${BASE_SHA}" ]] &&
-               [[ "${BASE_SHA}" != "0000000000000000000000000000000000000000" ]]; then
+          while IFS= read -r FILE; do
+            [[ -z "${FILE}" ]] && continue
 
-              CHANGED_FILES="$(
-                git diff --name-only "${BASE_SHA}" "${HEAD_SHA}"
-              )"
+            case "${FILE}" in
+              src/Modules/Clientes/*)
+                CLIENTES="true"
+                ;;
 
-            else
-              CHANGED_FILES="$(
-                git show \
-                  --pretty="" \
-                  --name-only \
-                  "${HEAD_SHA}"
-              )"
-            fi
+              src/Modules/Reservas/*)
+                RESERVAS="true"
+                ;;
 
-            echo ""
-            echo "Archivos modificados:"
-            echo "---------------------"
-            echo "${CHANGED_FILES}"
-            echo ""
+              src/Modules/Pagos/*)
+                PAGOS="true"
+                ;;
 
-            while IFS= read -r FILE; do
-              [[ -z "${FILE}" ]] && continue
+              src/Shared/*)
+                ALL_MODULES="true"
+                ;;
 
-              case "${FILE}" in
-                src/Modules/Clientes/*)
-                  CLIENTES="true"
-                  ;;
+              *.sln)
+                ALL_MODULES="true"
+                ;;
 
-                src/Modules/Reservas/*)
-                  RESERVAS="true"
-                  ;;
+              *.props)
+                ALL_MODULES="true"
+                ;;
 
-                src/Modules/Pagos/*)
-                  PAGOS="true"
-                  ;;
+              *.targets)
+                ALL_MODULES="true"
+                ;;
 
-                src/Shared/*)
-                  ALL_MODULES="true"
-                  ;;
+              global.json)
+                ALL_MODULES="true"
+                ;;
 
-                *.sln)
-                  ALL_MODULES="true"
-                  ;;
+              NuGet.config)
+                ALL_MODULES="true"
+                ;;
 
-                *.props)
-                  ALL_MODULES="true"
-                  ;;
+              Directory.Build.*)
+                ALL_MODULES="true"
+                ;;
 
-                *.targets)
-                  ALL_MODULES="true"
-                  ;;
+              scripts/*)
+                ALL_MODULES="true"
+                ;;
 
-                global.json)
-                  ALL_MODULES="true"
-                  ;;
+              Dockerfile)
+                ALL_MODULES="true"
+                ;;
 
-                NuGet.config)
-                  ALL_MODULES="true"
-                  ;;
-
-                Directory.Build.*)
-                  ALL_MODULES="true"
-                  ;;
-
-                .github/*)
-                  ALL_MODULES="true"
-                  ;;
-
-                scripts/*)
-                  ALL_MODULES="true"
-                  ;;
-
-                Dockerfile)
-                  ALL_MODULES="true"
-                  ;;
-
-                docker-compose*.yml)
-                  ALL_MODULES="true"
-                  ;;
-              esac
-            done <<< "${CHANGED_FILES}"
-          fi
+              docker-compose*.yml)
+                ALL_MODULES="true"
+                ;;
+            esac
+          done <<< "${CHANGED_FILES}"
 
           if [[ "${ALL_MODULES}" == "true" ]]; then
             CLIENTES="true"
@@ -245,7 +209,7 @@ jobs:
 
   # ============================================================
   # 5. Pipeline Scan - Clientes
-  # Solo push a feature/*
+  # Solo push a feature/* y si Clientes cambió
   # ============================================================
   scan-clientes:
     name: Pipeline Scan Clientes
@@ -254,9 +218,6 @@ jobs:
       - package-clientes
 
     if: |
-      always() &&
-      github.event_name == 'push' &&
-      startsWith(github.ref, 'refs/heads/feature/') &&
       needs.detect-changes.outputs.clientes == 'true' &&
       needs.package-clientes.result == 'success'
 
@@ -276,7 +237,7 @@ jobs:
 
   # ============================================================
   # 6. Pipeline Scan - Reservas
-  # Solo push a feature/*
+  # Solo push a feature/* y si Reservas cambió
   # ============================================================
   scan-reservas:
     name: Pipeline Scan Reservas
@@ -285,9 +246,6 @@ jobs:
       - package-reservas
 
     if: |
-      always() &&
-      github.event_name == 'push' &&
-      startsWith(github.ref, 'refs/heads/feature/') &&
       needs.detect-changes.outputs.reservas == 'true' &&
       needs.package-reservas.result == 'success'
 
@@ -307,7 +265,7 @@ jobs:
 
   # ============================================================
   # 7. Pipeline Scan - Pagos
-  # Solo push a feature/*
+  # Solo push a feature/* y si Pagos cambió
   # ============================================================
   scan-pagos:
     name: Pipeline Scan Pagos
@@ -316,9 +274,6 @@ jobs:
       - package-pagos
 
     if: |
-      always() &&
-      github.event_name == 'push' &&
-      startsWith(github.ref, 'refs/heads/feature/') &&
       needs.detect-changes.outputs.pagos == 'true' &&
       needs.package-pagos.result == 'success'
 
